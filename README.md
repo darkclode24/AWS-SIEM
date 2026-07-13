@@ -8,7 +8,7 @@ _AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch se
 <br>
 
 <div style="display: flex; justify-content: center; width: 100%;">
-  <img src="arch.png" width="600" height="1200">
+  <img src="images/arch.png" width="600" height="1200">
 </div>  
 
 <br>
@@ -38,10 +38,21 @@ Project uses the following AWS services :
 | **Amazon Cloudfront**  | Publishes the sanitized portfolio dashboard |
 
 
+## Region
+
+Regional service (*EC2*) used in the project is placed in *Jakarta (ap-southeast-3)*. AWS-Managed services are global by default, so region-selection is not needed. 
+
+## Pricing Calculation
+
+![Price Calculation](images/pricing-calc.png)
+
+Estimated Monthly cost is **14.06 USD**. The cost covers one **EC2 Instances + gp3 EBS**, and one **Public IPv4 address**.
+
+**CloudWatch, Lambda, SNS, S3 & CloudFront** will use Free Tier Plan, therefore the services will be free of charge.
+
 ## Budgeting
 
+![Budget Dashboard](images/budgets.png)
+
 Project service costs per month are tracked via *AWS Budgets Monthly Cost Limit*. Additionally, *Zero-Spend* alert is also configured to flag any unexpected resource usage before it accumulate cost.
-
-![Budget Dashboard](image.png)
-
 
