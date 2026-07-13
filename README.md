@@ -29,13 +29,13 @@ Project uses the following AWS services :
 
 | Services | Use |
 |-|-|
-| **Amazon EC2** | Hosts the Cowrie honeypot, configured with CloudWatch Agent and GeoLite2 |
-| **Amazon CloudWatch** | Monitor honeypot activity and centralizes logs in CloudWatch Logs |
-| **Amazon EventBridge** | Process and deliver Cloudwatch scheduled queries & alarms to Lambda |
-| **Amazon Lambda** | Check whether result contains suspicious activity. If it does, send message to SNS |
-| **Amazon SNS**  | Send reports to Telegram via Webhook |
-| **Amazon S3**  | Archive logs from CloudWatch with 90-day deletion lifecycle |
-| **Amazon Cloudfront**  | Deploy sanitized dashboard to public |
+| **Amazon EC2** | Hosts the Cowrie honeypot, CloudWatch Agent and GeoLite2 DB |
+| **Amazon CloudWatch** | Centralizes logs and provides queries, metrics, alarms, and dashboards |
+| **Amazon EventBridge** | Routes scheduled detection events and alarm state changes |
+| **Amazon Lambda** | Evaluates detection results and generates concise alerts |
+| **Amazon SNS**  | Distributes alert notifications |
+| **Amazon S3**  | Archives raw logs and stores sanitized dashboard data |
+| **Amazon Cloudfront**  | Publishes the sanitized portfolio dashboard |
 
 
 
