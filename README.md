@@ -13,27 +13,16 @@ _AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch se
 
 <br>
 
-## Operational Workflow
-1. **Log Generation** — *EC2*\
-    User connects to TCP (22) on EC2 instance &rarr; Cowrie records connections activities (usernames, passwords, commands, etc.) as JSON.
-<br></br>
-2. **Log Transport** — *CloudWatch Agent*\
-    Amazon CloudWatch Agent sends JSON events over HTTPS to CloudWatch Logs.
-<br></br>
-3. **Centralized Logging** — *CloudWatch Logs*\
-    CloudWatch provides storage, search, dashboards, metric filters, alarms, and scheduled queries.
-<br></br>
-4. **Event Routing** — *Amazon EventBridge*\
-    EventBridge receives alarm state changes and scheduled-query completion events.
-<br></br>
-5. **Alert Processing** — *AWS Lambda*\
-    Detector Lambda converts matching events into alerts.
-<br></br>
-6. **Notification** — *Amazon SNS*\
-    Amazon SNS sends alerts to Telegram via Webhook.
-<br></br>
-7. **Storage & Distribution** — *Amazon S3 & CloudFront*\
-    Private S3 bucket archives raw logs. Separate private S3 bucket and CloudFront distribution publish sanitized stats for portfolio.
+## Event Flow
+
+1. Internet user connects to the Cowrie honeypot through TCP port 22.
+2. Cowrie records auth attempts, commands, sessions, timestamps, etc. activity as JSON events.
+3. CloudWatch Agent sends events to CloudWatch Logs.
+4. CloudWatch stores and analyzes the logs using Logs Insights queries, metric filters, alarms, and dashboards.
+5. Amazon EventBridge routes scheduled detection events & alarm state changes to detector Lambda function.
+6. Lambda evaluates the results, generates an alert when suspicious activity is detected.
+7. Alerts are delivered to Telegram through the notification pipeline.
+8. Raw logs are archived in a private S3 bucket, while sanitized statistics are published through a separate S3 bucket and CloudFront distribution.
 
 ## Services
 Project uses the following AWS services :
