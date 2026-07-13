@@ -38,4 +38,10 @@ Project uses the following AWS services :
 | **Amazon Cloudfront**  | Publishes the sanitized portfolio dashboard |
 
 
+## Budgeting
+
+Project service costs per month are tracked via *AWS Budgets Monthly Cost Limit*. Additionally, *Zero-Spend* alert is also configured to flag any unexpected resource usage before it accumulate cost.
+
+![Budget Dashboard](image.png)
+
 
