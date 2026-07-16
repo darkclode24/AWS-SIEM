@@ -121,7 +121,7 @@ listen_endpoints = tcp:22:interface=0.0.0.0
 [telnet]
 enabled = false
 ```
-Since ports 1-1023 are reserved for root user, we need to use `CAP_NET_BIND_SERVICE`:
+Since ports 1-1023 are reserved for root user, `CAP_NET_BIND_SERVICE` is used:
 ```
 # Limits privileges available to Cowrie, so it can only request the power to bind to low ports.
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
