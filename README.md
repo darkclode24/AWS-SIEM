@@ -43,7 +43,7 @@ Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to cap
 
 ## Region
 
-Regional service (_EC_) used in the project is placed in _Jakarta (ap-southeast-3)_. AWS-Managed services are global by default, so region-selection is not needed.
+Regional service (_EC2_) used in the project is placed in _Jakarta (ap-southeast-3)_. AWS-Managed services are global by default, so region-selection is not needed.
 
 ## Pricing Calculation
 
