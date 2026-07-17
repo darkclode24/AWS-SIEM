@@ -39,11 +39,11 @@ Project uses the following AWS services :
 
   <img src="images/cowrie-logo.png" alt="Cowrie Logo" width="20%">
 
-Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to capture brute-force attempts and record attacker activity. In this project, Cowrie operates in medium-interaction shell mode, where it emulates a UNIX environment in Python and serves as the primary source of data.
+Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to capture brute-force attempts and record attacker activity. In this project, Cowrie operates in medium-interaction shell mode, where it emulates UNIX environment in Python and serves as the primary source of data.
 
 ## Region
 
-Regional service (_EC2_) used in the project is placed in _Jakarta (ap-southeast-3)_. AWS-Managed services are global by default, so region-selection is not needed.
+Regional resources in this project are deployed in the Asia Pacific (Jakarta) Region _(ap-southeast-3)_. CloudFront is a global service, while other resources (EC2, CloudWatch, Lambda, SNS, EventBridge, and S3) are configured in selected AWS Region.
 
 ## Pricing Calculation
 
@@ -85,11 +85,10 @@ a. Inbound Rules
 
 b. Outbound Rules
 
-| Type | Protocol | Port | Source | Purpose
+| Type | Protocol | Port | Destination | Purpose
 | - | - | - | - | - |
-| HTTP | TCP | 443 | `0.0.0.0/0` | SSM, CloudWatch, AWS APIs, HTTPS package repositories
-| HTTPS | TCP | 80 | `0.0.0.0/0` | If a package repository still requires HTTP
-
+| HTTPS | TCP | 443 | `0.0.0.0/0` | SSM, CloudWatch, AWS APIs, HTTPS package repositories
+| HTTP | TCP | 80 | `0.0.0.0/0` | If a package repository still requires HTTP
 
 # EC2
 
@@ -132,7 +131,22 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service` and `ssh.socket`, and enabling / starting Cowrie.
 
-![Price Calculation](images/cowrie.png)
+![Cowrie](images/cowrie.png)
+
+Note that SSH is no longer available, EC2 is accessed via AWS Systems Manager (SSM)
+
+## Blocking new outbound connections from Cowrie
+
+After installing and configuring Cowrie in the EC2 instance, connections initiated by Cowrie are blocked using:
+```
+meta skuid ${COWRIE_UID} ct state new reject
+```
+This rule is implemented using a script & persisted using systemd.
+
+After implementation, Cowrie cannot initiate outbound connections. It can only respond to attackers who establish an inbound connection.
+
+![Cowrie](images/cowrie.png)
+
 
 
 # CloudWatch
@@ -141,3 +155,41 @@ Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service`
 
 Created `/honeypot/cowrie` log group to receive logs from Cowrie EC2 instance.
 
+## CloudWatch Agent
+
+`AmazonCloudWatchAgent` package is installed to the EC2 instance via SSM &rarr; Run command, using `AWS-ConfigureAWSPackage` document.
+
+CloudWatch agent is configured as below:
+
+Source &rarr; `/log/cowrie/cowrie.json`
+Target &rarr; `/honeypot/cowrie`
+
+After configuration, CloudWatch agent successfully sends logs to Cloudwatch Logs.
+
+![Cloudwatch Logs](images/cloudwatch-logs.png)
+
+## Metric Filter & Alarm
+
+Metric filter is configured to detect any successful login events using pattern:
+
+```
+{ $.eventid = "cowrie.login.success" }
+```
+
+Each matching event adds a value of `1` to the metric. If no matching event is found, the default value is `0`.
+
+The alarm is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute.
+
+# SNS
+
+`cowrie-sec-alerts` SNS topic is created to be used for alerting via Telegram.
+
+# Lambda
+
+`cowrie-detector` function is created using configuration as below:
+
+`python 3.14` runtime.
+`timeout = 15 seconds` for safety buffer in case of network delays
+`env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
+
+Lambda code is available [here](script.py)  
