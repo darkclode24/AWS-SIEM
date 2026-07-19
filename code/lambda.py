@@ -20,7 +20,7 @@ def rows_to_dicts(results):
 def publish(subject, payload):
     response = sns.publish(
         TopicArn=TOPIC_ARN,
-        Subject=subject[:99],
+        Subject=subject[:100],
         Message=json.dumps(payload, indent=2, default=str),
     )
     return response["MessageId"]
@@ -71,17 +71,35 @@ def lambda_handler(event, context):
             return {"alerted": False, "reason": "Query returned no detections"}
 
         detection = rows[0].get("detection", "COWRIE_DETECTION")
+        severity_by_detection = {
+            "CREDENTIAL_GUESSING_BURST": "MEDIUM",
+            "FILE_TRANSFER": "HIGH",
+        }
+        next_step_by_detection = {
+            "CREDENTIAL_GUESSING_BURST": (
+                "Review authentication events for the source IP, then pivot "
+                "on its session identifiers in the private log group."
+            ),
+            "FILE_TRANSFER": (
+                "Review the session, transfer metadata, and SHA-256 value."
+            ),
+        }
+        severity = severity_by_detection.get(detection, "MEDIUM")
+
         payload = {
             "detection": detection,
-            "severity": "MEDIUM",
+            "severity": severity,
             "time": event.get("time"),
             "region": event.get("region"),
             "matched_rows": len(rows),
             "results": rows[:MAX_ROWS_IN_ALERT],
             "statistics": detail.get("statistics", {}),
-            "next_step": "Pivot on src_ip and session in the private log group.",
+            "next_step": next_step_by_detection.get(
+                detection,
+                "Pivot on src_ip and session in the private log group.",
+            ),
         }
-        message_id = publish(f"Cowrie alert: {detection}", payload)
+        message_id = publish(f"{severity}: Cowrie {detection}", payload)
         return {"alerted": True, "message_id": message_id}
 
     return {"alerted": False, "reason": "Unsupported event type"}

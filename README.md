@@ -1,12 +1,17 @@
 # AWS CloudWatch-Based SIEM with Honeypot
 
-AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch service with Cowrie Honeypot as data source, data and analytics are sanitized and visualized to a public Cloudfront dashboard.
+AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch service with Cowrie Honeypot as data source, data and analytics are sanitized and visualized to a public CloudFront dashboard.
 
 ## Architecture Overview
 
 <p align="center">
   <img src="images/arch.png" alt="Architecture Overview" width="70%">
 </p>
+
+To-Dos:
+- [ ] Change login success and credential-burst processing
+- [ ] Unblock Cowrie's egress firewall
+- [ ] Create Dashboard and vizg
 
 ## Event Flow
 
@@ -31,49 +36,49 @@ Project uses the following AWS services :
 | **Amazon Lambda** | Evaluates detection results and generates concise alerts |
 | **Amazon SNS** | Distributes alert notifications |
 | **Amazon S3** | Archives raw logs and stores sanitized dashboard data |
-| **Amazon Cloudfront** | Publishes the sanitized portfolio dashboard |
+| **Amazon CloudFront** | Publishes the sanitized portfolio dashboard |
 
-# Preparation
+## Preparation
 
-## Cowrie
+### Cowrie
 
   <img src="images/cowrie-logo.png" alt="Cowrie Logo" width="20%">
 
-Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to capture brute-force attempts and record attacker activity. In this project, Cowrie operates in medium-interaction shell mode, where it emulates UNIX environment in Python and serves as the primary source of data.
+Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to capture brute-force attempts and record attacker activity. In this project, Cowrie operates in medium-interaction shell mode where it emulates UNIX environment in Python and serves as the primary source of data.
 
-## Region
+### Region
 
 Regional resources in this project are deployed in the Asia Pacific (Jakarta) Region _(ap-southeast-3)_. CloudFront is a global service, while other resources (EC2, CloudWatch, Lambda, SNS, EventBridge, and S3) are configured in selected AWS Region.
 
-## Pricing Calculation
+### Pricing Calculation
 
 ![Price Calculation](images/pricing-calc.png)
 
-Estimated Monthly cost is **14.06 USD**. The cost covers one **EC2 Instances + gp3 EBS**, and one **Public IPv4 address**.
+Estimated Monthly cost is **14.06 USD** as per of `16 July 2026`. The cost covers one **EC2 Instances + 8GB gp3 EBS**, and one **Public IPv4 address**.
 
-**CloudWatch, Lambda, SNS, S3 & CloudFront** will use Free Tier Plan, therefore the services will be free of charge.
+**CloudWatch, Lambda, SNS, S3 & CloudFront** will use Free Tier Plan and expected to remain within free tier usage, therefore the services will be free of charge.
 
-## Budgeting
+### Budgeting
 
 ![Budget Dashboard](images/budgets.png)
 
 Project service costs per month are tracked via AWS Budgets `Monthly Cost Limit`. Additionally, `Zero-Spend` alert is also configured to flag any unexpected resource usage before it accumulate cost.
 
-## Account
+### Account
 
 Before starting, a separate IAM user named `bint-siem` is created instead of using the root user account for the project. The user is then attached to a user group with only the permissions necessary for this project, following the _Principle of Least Privilege_ (PoLP) 
 
 ![User Group Permissions](images/permissions.png)
 
-# Network
+## Network
 
-## VPC
+### VPC
 
 ![Resource Map](images/resource-map.png)
 
 EC2 instance is deployed in a _Virtual Private Cloud_ (VPC) named `cowrie-siem-vpc` using `10.10.0.0/16` CIDR block, with a public subnet at `10.10.1.0/24`. This setup provides 251 IP addresses (AWS reserves 5 addresses) which is more than enough for the EC2 instance.
 
-## Security Group
+### Security Group
 
 Security group is configured for `cowrie-siem-vpc` with inbound and outbound rules as below:
 
@@ -90,20 +95,20 @@ b. Outbound Rules
 | HTTPS | TCP | 443 | `0.0.0.0/0` | SSM, CloudWatch, AWS APIs, HTTPS package repositories
 | HTTP | TCP | 80 | `0.0.0.0/0` | If a package repository still requires HTTP
 
-# EC2
+## EC2
 
-## IAM role
+### IAM role
 
 ![Resource Map](images/ec2-role.png)
 
 EC2 instance is attached with a role with policies below:
 
-a. `AmazonSSMManagedInstanceCore` : Enable AWS Systems Manager service core 
+a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core 
 functionality
 
-b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_ : Send logs only to `/honeypot/cowrie` CloudWatch Logs group
+b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs only to `/honeypot/cowrie` CloudWatch Logs group
 
-## Installing Cowrie
+### Installing Cowrie
 
 Before installing Cowrie, a dedicated unprevileged user and python venv are created. Running Cowrie without admin power limits impact if honeypot is compromised, venv keeps python dependencies isolated from the system environment.
 
@@ -120,12 +125,12 @@ listen_endpoints = tcp:22:interface=0.0.0.0
 [telnet]
 enabled = false
 ```
-Since ports 1-1023 are reserved for root user, `CAP_NET_BIND_SERVICE` is used:
+Since ports 1-1023 normally requires root privileges, `CAP_NET_BIND_SERVICE` is used:
 ```
-# Limits privileges available to Cowrie, so it can only request the power to bind to low ports.
+# Restrict the service's available capabilities
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
-# Give the low ports bind privilege to Cowrie 
+# Grant the capability required to bind to TCP port 22
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ```
 
@@ -135,27 +140,25 @@ Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service`
 
 Note that SSH is no longer available, EC2 is accessed via AWS Systems Manager (SSM)
 
-## Blocking new outbound connections from Cowrie
+### Blocking new outbound connections from Cowrie
 
 After installing and configuring Cowrie in the EC2 instance, connections initiated by Cowrie are blocked using:
 ```
 meta skuid ${COWRIE_UID} ct state new reject
 ```
-This rule is implemented using a script & persisted using systemd.
+This rule is implemented using a script and persisted using systemd.
 
-After implementation, Cowrie cannot initiate outbound connections. It can only respond to attackers who establish an inbound connection.
+After implementation, Cowrie `User ID` can't initiate outbound connections. It can only reply to attackers who establish an inbound connection.
 
-![Cowrie](images/cowrie.png)
+![Cowrie](images/firewall-block-success.png)
 
+## Detecting the attackers
 
-
-# CloudWatch
-
-## Log Group
+### CloudWatch Log Group
 
 Created `/honeypot/cowrie` log group to receive logs from Cowrie EC2 instance.
 
-## CloudWatch Agent
+### CloudWatch Agent
 
 `AmazonCloudWatchAgent` package is installed to the EC2 instance via SSM &rarr; Run command, using `AWS-ConfigureAWSPackage` document.
 
@@ -164,11 +167,11 @@ CloudWatch agent is configured as below:
 Source &rarr; `/log/cowrie/cowrie.json`
 Target &rarr; `/honeypot/cowrie`
 
-After configuration, CloudWatch agent successfully sends logs to Cloudwatch Logs.
+After configuration, CloudWatch agent successfully sends logs to CloudWatch Logs.
 
-![Cloudwatch Logs](images/cloudwatch-logs.png)
+![CloudWatch Logs](images/CloudWatch-logs.png)
 
-## Metric Filter & Alarm
+### Metric Filter & Alarm
 
 Metric filter is configured to detect any successful login events using pattern:
 
@@ -178,13 +181,59 @@ Metric filter is configured to detect any successful login events using pattern:
 
 Each matching event adds a value of `1` to the metric. If no matching event is found, the default value is `0`.
 
-The alarm is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute.
+Alarm `cowrie-login-success` is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute.
 
-# SNS
+### Scheduled Query
+
+CloudWatch's scheduled query is created to detect:
+
+**a. Credential Attempts in honeypot**
+
+  Accepted and rejected attempts are detected using query as below:
+
+  ```
+  fields "CREDENTIAL_GUESSING_BURST" as detection,
+        src_ip,
+        username,
+        session
+  | filter eventid = "cowrie.login.failed"
+      or eventid = "cowrie.login.success"
+  | stats count(*) as attempts,
+          count_distinct(username) as usernames,
+          count_distinct(session) as sessions
+    by detection, src_ip
+  | filter attempts >= 3
+  | sort attempts desc
+  ```
+  The query is run every 15 minutes indefinitely, with lookback of 15 minutes.
+   
+**b. File-transfers in honeypot**
+
+  File uploads and downloads in Cowrie are detected using query:
+
+  ```
+  fields "FILE_TRANSFER" as detection,
+        @timestamp,
+        eventid,
+        src_ip,
+        session,
+        url,
+        filename,
+        outfile,
+        shasum
+  | filter eventid = "cowrie.session.file_upload"
+      or eventid = "cowrie.session.file_download"
+  | sort @timestamp desc
+  | limit 50
+  ```
+  Since file-transfers are higher-priority than login attempts, the query is run every 5 minutes with lookback of 5 minutes.
+
+
+### SNS
 
 `cowrie-sec-alerts` SNS topic is created to be used for alerting via Telegram.
 
-# Lambda
+### Lambda
 
 `cowrie-detector` function is created using configuration as below:
 
@@ -192,4 +241,11 @@ The alarm is configured to enter `ALARM` state when the metric value sum is `>=1
 `timeout = 15 seconds` for safety buffer in case of network delays
 `env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
 
-Lambda code is available [here](script.py)  
+Lambda code is available [here](script.py) 
+
+### EventBridge
+
+Rule named `cowrie-login-success-to-detector` is created to receive `cowrie-login-success` alarm, and send it to `cowrie-detector` Lambda.
+
+Another rule named `cowrie-scheduled-queries-to-detector` is created to send scheduled queries to `cowrie-detector` Lambda.
+
