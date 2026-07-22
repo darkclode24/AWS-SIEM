@@ -11,7 +11,7 @@ AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch ser
 To-Dos:
 - [ ] Change login success and credential-burst processing
 - [ ] Unblock Cowrie's egress firewall
-- [ ] Create Dashboard and vizg
+- [ ] Create Dashboard and viz
 
 ## Event Flow
 
@@ -140,15 +140,26 @@ Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service`
 
 Note that SSH is no longer available, EC2 is accessed via AWS Systems Manager (SSM)
 
-### Blocking new outbound connections from Cowrie
+### ~~Blocking new outbound connections from Cowrie~~
 
-After installing and configuring Cowrie in the EC2 instance, connections initiated by Cowrie are blocked using:
+~~After installing and configuring Cowrie in the EC2 instance, connections initiated by Cowrie are blocked using:~~
+~~`meta skuid ${COWRIE_UID} ct state new reject`~~
+
+### Filtering Cowrie outbound connections
+
+After installing and configuring Cowrie in the EC2 instance, Cowrie's outbound is scoped to DNS (53) and HTTPS (443); every other new connection is logged and rejected:
+
 ```
-meta skuid ${COWRIE_UID} ct state new reject
+meta skuid ${COWRIE_UID} udp dport 53  accept
+meta skuid ${COWRIE_UID} tcp dport 53  accept
+meta skuid ${COWRIE_UID} tcp dport 443 accept
+meta skuid ${COWRIE_UID} ct state new log prefix "cowrie-egress-deny " counter reject
 ```
 This rule is implemented using a script and persisted using systemd.
 
-After implementation, Cowrie `User ID` can't initiate outbound connections. It can only reply to attackers who establish an inbound connection.
+~~After implementation, Cowrie `User ID` can't initiate outbound connections. It can only reply to attackers who establish an inbound connection.~~
+
+After implementation, Cowrie `User ID` can resolve names and fetch files over HTTPS, so it captures malware samples fetched by attackers via `wget`/`curl`, but it cannot open new outbound connections on other ports. Denied attempts are logged with the `cowrie-egress-deny` prefix.
 
 ![Cowrie](images/firewall-block-success.png)
 
@@ -183,6 +194,14 @@ Each matching event adds a value of `1` to the metric. If no matching event is f
 
 Alarm `cowrie-login-success` is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute.
 
+A second metric filter detects file uploads and downloads:
+
+```
+{ ($.eventid = "cowrie.session.file_upload") || ($.eventid = "cowrie.session.file_download") }
+```
+
+Alarm `cowrie-file-transfer` is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute. The alarm event carries only the count, so the detector Lambda runs a short Logs Insights enrichment query on alert to fetch the file metadata.
+
 ### Scheduled Query
 
 CloudWatch's scheduled query is created to detect:
@@ -209,24 +228,11 @@ CloudWatch's scheduled query is created to detect:
    
 **b. File-transfers in honeypot**
 
-  File uploads and downloads in Cowrie are detected using query:
+~~File uploads and downloads in Cowrie are detected using a scheduled Logs Insights query run every 5 minutes with a 5-minute lookback.~~
 
-  ```
-  fields "FILE_TRANSFER" as detection,
-        @timestamp,
-        eventid,
-        src_ip,
-        session,
-        url,
-        filename,
-        outfile,
-        shasum
-  | filter eventid = "cowrie.session.file_upload"
-      or eventid = "cowrie.session.file_download"
-  | sort @timestamp desc
-  | limit 50
-  ```
-  Since file-transfers are higher-priority than login attempts, the query is run every 5 minutes with lookback of 5 minutes.
+File uploads and downloads in Cowrie are detected using a metric filter and alarm. File transfer is a discrete high-confidence event, so it. Refer the _Metric Filter & Alarm_ section for the filter pattern and alarm configuration.
+
+With outbound HTTPS allowed, Cowrie captures files fetched by attackers through `wget`/`curl` and stores them in `var/lib/cowrie/downloads/` with a SHA-256, so both SCP/SFTP transfers and `wget`/`curl` fetches produce `file_upload` or `file_download` events carrying the `url`, `filename`, and `shasum` fields.
 
 
 ### SNS
@@ -238,14 +244,18 @@ CloudWatch's scheduled query is created to detect:
 `cowrie-detector` function is created using configuration as below:
 
 `python 3.14` runtime.
-`timeout = 15 seconds` for safety buffer in case of network delays
+~~`timeout = 15 seconds` for safety buffer in case of network delays~~
+`timeout = 30 seconds` to allow the enrichment query to start and poll on file-transfer alarms
 `env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
+`env_variable = COWRIE_LOG_GROUP`  for the file-transfer enrichment query
 
-Lambda code is available [here](script.py) 
+Lambda code is available [here](code/lambda.py) 
 
 ### EventBridge
 
 Rule named `cowrie-login-success-to-detector` is created to receive `cowrie-login-success` alarm, and send it to `cowrie-detector` Lambda.
+
+Another rule named `cowrie-file-transfer-to-detector` is created to receive `cowrie-file-transfer` alarm, and send it to `cowrie-detector` Lambda. The Lambda then runs a short enrichment query to attach file metadata to the alert.
 
 Another rule named `cowrie-scheduled-queries-to-detector` is created to send scheduled queries to `cowrie-detector` Lambda.
 

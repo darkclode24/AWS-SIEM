@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import boto3
 
@@ -7,6 +8,10 @@ logs = boto3.client("logs")
 sns = boto3.client("sns")
 
 TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
+LOG_GROUP = os.environ.get("COWRIE_LOG_GROUP", "/honeypot/cowrie")
+ENRICHMENT_LOOKBACK_SECONDS = 300
+ENRICHMENT_POLL_INTERVAL = 1
+ENRICHMENT_POLL_ATTEMPTS = 10
 MAX_ROWS_IN_ALERT = 20
 
 
@@ -23,7 +28,38 @@ def publish(subject, payload):
         Subject=subject[:100],
         Message=json.dumps(payload, indent=2, default=str),
     )
-    return response["MessageId"]
+    return response["messageId"]
+
+
+def run_file_transfer_enrichment_query():
+    query = '''fields "FILE_TRANSFER" as detection,
+       @timestamp,
+       eventid,
+       src_ip,
+       session,
+       url,
+       filename,
+       outfile,
+       shasum
+| filter eventid = "cowrie.session.file_upload"
+    or eventid = "cowrie.session.file_download"
+| sort @timestamp desc
+| limit 20'''
+    now = int(time.time())
+    started = logs.start_query(
+        logGroupName=LOG_GROUP,
+        startTime=now - ENRICHMENT_LOOKBACK_SECONDS,
+        endTime=now,
+        queryString=query,
+    )
+    query_id = started["queryId"]
+
+    for _ in range(ENRICHMENT_POLL_ATTEMPTS):
+        results = logs.get_query_results(queryId=query_id)
+        if results.get("status") in ("Complete", "Failed", "Cancelled"):
+            break
+        time.sleep(ENRICHMENT_POLL_INTERVAL)
+    return results
 
 
 def lambda_handler(event, context):
@@ -36,20 +72,57 @@ def lambda_handler(event, context):
         if state.get("value") != "ALARM":
             return {"alerted": False, "reason": "Alarm is not in ALARM state"}
 
-        payload = {
-            "detection": "HONEYPOT_LOGIN_SUCCESS",
-            "severity": "HIGH",
-            "alarm": detail.get("alarmName", "unknown"),
-            "time": event.get("time"),
-            "region": event.get("region"),
-            "reason": state.get("reason", ""),
-            "next_step": (
-                "Open CloudWatch Logs Insights and investigate recent "
-                "cowrie.login.success events."
-            ),
-        }
-        message_id = publish("HIGH: Cowrie successful login", payload)
-        return {"alerted": True, "message_id": message_id}
+        alarm_name = detail.get("alarmName", "unknown")
+
+        if alarm_name == "cowrie-login-success":
+            payload = {
+                "detection": "HONEYPOT_LOGIN_SUCCESS",
+                "severity": "HIGH",
+                "alarm": alarm_name,
+                "time": event.get("time"),
+                "region": event.get("region"),
+                "reason": state.get("reason", ""),
+                "next_step": (
+                    "Open CloudWatch Logs Insights and investigate recent "
+                    "cowrie.login.success events."
+                ),
+            }
+            message_id = publish("HIGH: Cowrie successful login", payload)
+            return {"alerted": True, "message_id": message_id}
+
+        if alarm_name == "cowrie-file-transfer":
+            enrichment = run_file_transfer_enrichment_query()
+            rows = rows_to_dicts(enrichment.get("results", []))
+            if rows:
+                next_step = (
+                    "Review the session, transfer metadata, and SHA-256 "
+                    "value. Do not execute the captured file."
+                )
+            else:
+                next_step = (
+                    "Open CloudWatch Logs Insights and investigate recent "
+                    "cowrie.session.file_upload and "
+                    "cowrie.session.file_download events."
+                )
+            payload = {
+                "detection": "FILE_TRANSFER",
+                "severity": "HIGH",
+                "alarm": alarm_name,
+                "time": event.get("time"),
+                "region": event.get("region"),
+                "reason": state.get("reason", ""),
+                "matched_rows": len(rows),
+                "results": rows[:MAX_ROWS_IN_ALERT],
+                "next_step": next_step,
+            }
+            message_id = publish("HIGH: Cowrie file transfer", payload)
+            return {
+                "alerted": True,
+                "message_id": message_id,
+                "enriched": bool(rows),
+            }
+
+        return {"alerted": False, "reason": f"Unhandled alarm: {alarm_name}"}
 
     if source == "aws.logs" and detail_type == "Scheduled Query Completed":
         if detail.get("status") != "Complete":
@@ -81,7 +154,8 @@ def lambda_handler(event, context):
                 "on its session identifiers in the private log group."
             ),
             "FILE_TRANSFER": (
-                "Review the session, transfer metadata, and SHA-256 value."
+                "Review the session, transfer metadata, and SHA-256 value. "
+                "Do not execute the captured file."
             ),
         }
         severity = severity_by_detection.get(detection, "MEDIUM")
