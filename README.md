@@ -9,6 +9,7 @@ AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch ser
 </p>
 
 To-Dos:
+
 - [ ] Change login success and credential-burst processing
 - [ ] Unblock Cowrie's egress firewall
 - [ ] Create Dashboard and viz
@@ -66,7 +67,7 @@ Project service costs per month are tracked via AWS Budgets `Monthly Cost Limit`
 
 ### Account
 
-Before starting, a separate IAM user named `bint-siem` is created instead of using the root user account for the project. The user is then attached to a user group with only the permissions necessary for this project, following the _Principle of Least Privilege_ (PoLP) 
+Before starting, a separate IAM user named `bint-siem` is created instead of using the root user account for the project. The user is then attached to a user group with only the permissions necessary for this project, following the _Principle of Least Privilege_ (PoLP)
 
 ![User Group Permissions](images/permissions.png)
 
@@ -103,7 +104,7 @@ b. Outbound Rules
 
 EC2 instance is attached with a role with policies below:
 
-a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core 
+a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core
 functionality
 
 b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs only to `/honeypot/cowrie` CloudWatch Logs group
@@ -113,6 +114,7 @@ b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs only to `/honeypot/c
 Before installing Cowrie, a dedicated unprevileged user and python venv are created. Running Cowrie without admin power limits impact if honeypot is compromised, venv keeps python dependencies isolated from the system environment.
 
 After setup, `cowrie 3.0.0` is installed. Configuration is set as below after `cowrie init` is completed:
+
 ```
 [honeypot]
 hostname = srv-test-01
@@ -125,7 +127,9 @@ listen_endpoints = tcp:22:interface=0.0.0.0
 [telnet]
 enabled = false
 ```
+
 Since ports 1-1023 normally requires root privileges, `CAP_NET_BIND_SERVICE` is used:
+
 ```
 # Restrict the service's available capabilities
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
@@ -140,26 +144,52 @@ Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service`
 
 Note that SSH is no longer available, EC2 is accessed via AWS Systems Manager (SSM)
 
-### ~~Blocking new outbound connections from Cowrie~~
+### Patch Cowrie curl command
 
-~~After installing and configuring Cowrie in the EC2 instance, connections initiated by Cowrie are blocked using:~~
-~~`meta skuid ${COWRIE_UID} ct state new reject`~~
+`Cowrie 3.0.0` contains a bug in its emulated curl command.
+
+```
+src/cowrie/commands/curl.py  
+```
+
+When downloading from web servers that do not return a `Content-Length` header, Twisted sets `response.length` to the string sentinel `UNKNOWN_LENGTH`. Cowrie attempts to evaluate `self.totallength > limit_size`, raising `TypeError: '>' not supported between instances of 'str' and 'int'` and crashing the transfer silently.
+
+The fix is to make `self.totallength` comparisons int-safe. The byte-level size limit in `collect()` remains fully enforced during transfer:
+
+```python
+
+# Before
+if limit_size > 0 and self.totallength > limit_size:
+
+# After
+if limit_size > 0 and isinstance(self.totallength, int) and self.totallength > limit_size:  
+
+```
 
 ### Filtering Cowrie outbound connections
 
-After installing and configuring Cowrie in the EC2 instance, Cowrie's outbound is scoped to DNS (53) and HTTPS (443); every other new connection is logged and rejected:
+After installing and configuring Cowrie on the EC2 instance, outbound traffic from `cowrie` user allows public HTTP (80) and HTTPS (443) payload retrieval, restrict DNS to local/VPC resolvers, and reject unsafe destinations (private IPs, EC2 metadata, IPv6).
+
+```nftables
+
+meta skuid ${COWRIE_UID} ip daddr { 127.0.0.53, 127.0.0.1, 10.10.0.2 } udp dport 53 accept
+meta skuid ${COWRIE_UID} ip daddr { 127.0.0.53, 127.0.0.1, 10.10.0.2 } tcp dport 53 accept
+
+meta skuid ${COWRIE_UID} ip daddr @unsafe_ipv4 ct state new \
+  log prefix "cowrie-egress-unsafe " counter reject
+meta skuid ${COWRIE_UID} ip6 daddr ::/0 ct state new \
+  log prefix "cowrie-egress-ipv6 " counter reject
+
+meta skuid ${COWRIE_UID} tcp dport { 80, 443 } accept
+
+meta skuid ${COWRIE_UID} ct state new \
+  log prefix "cowrie-egress-deny " counter reject
 
 ```
-meta skuid ${COWRIE_UID} udp dport 53  accept
-meta skuid ${COWRIE_UID} tcp dport 53  accept
-meta skuid ${COWRIE_UID} tcp dport 443 accept
-meta skuid ${COWRIE_UID} ct state new log prefix "cowrie-egress-deny " counter reject
-```
-This rule is implemented using a script and persisted using systemd.
 
-~~After implementation, Cowrie `User ID` can't initiate outbound connections. It can only reply to attackers who establish an inbound connection.~~
+This rule is implemented using a custom script and persisted using systemd
 
-After implementation, Cowrie `User ID` can resolve names and fetch files over HTTPS, so it captures malware samples fetched by attackers via `wget`/`curl`, but it cannot open new outbound connections on other ports. Denied attempts are logged with the `cowrie-egress-deny` prefix.
+After implementation, Cowrie can resolve names and fetch files over HTTP/HTTPS to capture downloads via `wget`/`curl`, but it cannot reach AWS metadata (`169.254.169.254`), private internal networks, IPv6, or non-HTTP ports.
 
 ![Cowrie](images/firewall-block-success.png)
 
@@ -224,8 +254,9 @@ CloudWatch's scheduled query is created to detect:
   | filter attempts >= 3
   | sort attempts desc
   ```
+
   The query is run every 15 minutes indefinitely, with lookback of 15 minutes.
-   
+
 **b. File-transfers in honeypot**
 
 ~~File uploads and downloads in Cowrie are detected using a scheduled Logs Insights query run every 5 minutes with a 5-minute lookback.~~
@@ -233,7 +264,6 @@ CloudWatch's scheduled query is created to detect:
 File uploads and downloads in Cowrie are detected using a metric filter and alarm. File transfer is a discrete high-confidence event, so it. Refer the _Metric Filter & Alarm_ section for the filter pattern and alarm configuration.
 
 With outbound HTTPS allowed, Cowrie captures files fetched by attackers through `wget`/`curl` and stores them in `var/lib/cowrie/downloads/` with a SHA-256, so both SCP/SFTP transfers and `wget`/`curl` fetches produce `file_upload` or `file_download` events carrying the `url`, `filename`, and `shasum` fields.
-
 
 ### SNS
 
@@ -249,7 +279,7 @@ With outbound HTTPS allowed, Cowrie captures files fetched by attackers through 
 `env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
 `env_variable = COWRIE_LOG_GROUP`  for the file-transfer enrichment query
 
-Lambda code is available [here](code/lambda.py) 
+Lambda code is available [here](code/lambda.py)
 
 ### EventBridge
 
@@ -258,4 +288,3 @@ Rule named `cowrie-login-success-to-detector` is created to receive `cowrie-logi
 Another rule named `cowrie-file-transfer-to-detector` is created to receive `cowrie-file-transfer` alarm, and send it to `cowrie-detector` Lambda. The Lambda then runs a short enrichment query to attach file metadata to the alert.
 
 Another rule named `cowrie-scheduled-queries-to-detector` is created to send scheduled queries to `cowrie-detector` Lambda.
-
