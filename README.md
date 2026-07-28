@@ -104,8 +104,7 @@ b. Outbound Rules
 
 EC2 instance is attached with a role with policies below:
 
-a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core
-functionality
+a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core functionality
 
 b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs only to `/honeypot/cowrie` CloudWatch Logs group
 
@@ -119,6 +118,7 @@ After setup, `cowrie 3.0.0` is installed. Configuration is set as below after `c
 [honeypot]
 hostname = srv-test-01
 backend = shell
+download_limit_size = 10485760
 
 [ssh]
 enabled = true
@@ -191,7 +191,7 @@ This rule is implemented using a custom script and persisted using systemd
 
 After implementation, Cowrie can resolve names and fetch files over HTTP/HTTPS to capture downloads via `wget`/`curl`, but it cannot reach AWS metadata (`169.254.169.254`), private internal networks, IPv6, or non-HTTP ports.
 
-![Cowrie](images/firewall-block-success.png)
+![HTTP & HTTPS working](images/cowrie_connection.png)
 
 ## Detecting the attackers
 
