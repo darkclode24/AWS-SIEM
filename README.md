@@ -193,6 +193,8 @@ After implementation, Cowrie can resolve names and fetch files over HTTP/HTTPS t
 
 ![HTTP & HTTPS working](images/cowrie_connection.png)
 
+>The VPC is IPv4-only today, so the IPv6 rule matches no traffic. However, because the firewall uses the `inet` family, any future IPv6 traffic would bypass the IPv4-only deny list, leaving egress unrestricted.
+
 ## Detecting the attackers
 
 ### CloudWatch Log Group
@@ -212,25 +214,33 @@ After configuration, CloudWatch agent successfully sends logs to CloudWatch Logs
 
 ![CloudWatch Logs](images/CloudWatch-logs.png)
 
-### Metric Filter & Alarm
+### Subscription Filter
 
-Metric filter is configured to detect any successful login events using pattern:
+CloudWatch Logs **subscription filter** streams successful login, and file transfer events directly to the detector Lambda.
 
-```
-{ $.eventid = "cowrie.login.success" }
-```
+One subscription filter named `cowrie-high-confidence-events` is configured on the `/honeypot/cowrie` log group with the pattern:
 
-Each matching event adds a value of `1` to the metric. If no matching event is found, the default value is `0`.
+```pattern
 
-Alarm `cowrie-login-success` is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute.
-
-A second metric filter detects file uploads and downloads:
+{ ($.eventid = "cowrie.login.success") || ($.eventid = "cowrie.session.file_upload") || ($.eventid = "cowrie.session.file_download") }
 
 ```
-{ ($.eventid = "cowrie.session.file_upload") || ($.eventid = "cowrie.session.file_download") }
-```
 
-Alarm `cowrie-file-transfer` is configured to enter `ALARM` state when the metric value sum is `>=1` within 1 minute. The alarm event carries only the count, so the detector Lambda runs a short Logs Insights enrichment query on alert to fetch the file metadata.
+| Setting | Value |
+|---|---|
+| Filter name | `cowrie-high-confidence-events` |
+| Destination | Lambda function `cowrie-detector` |
+| Log format | JSON |
+
+CloudWatch Logs sends compressed events to Lambda. Lambda decodes and verifies the payload, maps the event to a detection type, and publishes SNS alert with key details (detection name, severity, timestamp, sensor alias, alert ID, and optional SHA-256).
+
+| Cowrie event | Detection | Severity |
+|---|---|---|
+| `cowrie.login.success` | `COWRIE_EMULATED_AUTH_ACCEPTED` | HIGH |
+| `cowrie.session.file_upload` | `COWRIE_FILE_UPLOADED` | HIGH |
+| `cowrie.session.file_download` | `COWRIE_URL_PAYLOAD_DOWNLOADED` | HIGH |
+
+Sensitive fields (source IP, username, password, session ID, URL, filename, local path) remain in private CloudWatch Logs and are never included in alert emails.
 
 ### Scheduled Query
 
@@ -274,7 +284,6 @@ With outbound HTTPS allowed, Cowrie captures files fetched by attackers through 
 `cowrie-detector` function is created using configuration as below:
 
 `python 3.14` runtime.
-~~`timeout = 15 seconds` for safety buffer in case of network delays~~
 `timeout = 30 seconds` to allow the enrichment query to start and poll on file-transfer alarms
 `env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
 `env_variable = COWRIE_LOG_GROUP`  for the file-transfer enrichment query

@@ -1,6 +1,9 @@
+import base64
+import gzip
+import hashlib
 import json
 import os
-import time
+from datetime import datetime, timezone
 
 import boto3
 
@@ -8,11 +11,44 @@ logs = boto3.client("logs")
 sns = boto3.client("sns")
 
 TOPIC_ARN = os.environ["SNS_TOPIC_ARN"]
+EXPECTED_ACCOUNT_ID = os.environ.get("EXPECTED_ACCOUNT_ID", "")
+EXPECTED_REGION = os.environ.get("EXPECTED_REGION", "")
 LOG_GROUP = os.environ.get("COWRIE_LOG_GROUP", "/honeypot/cowrie")
-ENRICHMENT_LOOKBACK_SECONDS = 300
-ENRICHMENT_POLL_INTERVAL = 1
-ENRICHMENT_POLL_ATTEMPTS = 10
+CREDENTIAL_QUERY_ARN = os.environ.get("CREDENTIAL_QUERY_ARN", "")
+SENSOR_ALIAS = os.environ.get("HONEYPOT_SENSOR_ALIAS", "cowrie-sensor-01")
+QUERY_MARKER = "CREDENTIAL_GUESSING_BURST"
+
 MAX_ROWS_IN_ALERT = 20
+HIGH_CONFIDENCE_EVENTS = {
+    "cowrie.login.success": ("COWRIE_EMULATED_AUTH_ACCEPTED", "HIGH"),
+    "cowrie.session.file_upload": ("COWRIE_FILE_UPLOADED", "HIGH"),
+    "cowrie.session.file_download": ("COWRIE_URL_PAYLOAD_DOWNLOADED", "HIGH"),
+}
+
+
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_event_time(value):
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, (int, float)):
+        return (
+            datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    return utc_now_iso()
+
+
+def publish(subject, payload):
+    response = sns.publish(
+        TopicArn=TOPIC_ARN,
+        Subject=subject[:100],
+        Message=json.dumps(payload, indent=2, default=str),
+    )
+    return response["MessageId"]
 
 
 def rows_to_dicts(results):
@@ -22,158 +58,153 @@ def rows_to_dicts(results):
     ]
 
 
-def publish(subject, payload):
-    response = sns.publish(
-        TopicArn=TOPIC_ARN,
-        Subject=subject[:100],
-        Message=json.dumps(payload, indent=2, default=str),
-    )
-    return response["messageId"]
+def decode_subscription_event(event):
+    try:
+        compressed = base64.b64decode(event["awslogs"]["data"])
+        return json.loads(gzip.decompress(compressed).decode("utf-8"))
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        raise ValueError("Invalid CloudWatch Logs subscription event") from exc
 
 
-def run_file_transfer_enrichment_query():
-    query = '''fields "FILE_TRANSFER" as detection,
-       @timestamp,
-       eventid,
-       src_ip,
-       session,
-       url,
-       filename,
-       outfile,
-       shasum
-| filter eventid = "cowrie.session.file_upload"
-    or eventid = "cowrie.session.file_download"
-| sort @timestamp desc
-| limit 20'''
-    now = int(time.time())
-    started = logs.start_query(
-        logGroupName=LOG_GROUP,
-        startTime=now - ENRICHMENT_LOOKBACK_SECONDS,
-        endTime=now,
-        queryString=query,
-    )
-    query_id = started["queryId"]
+def log_event_to_json(log_event):
+    message = log_event.get("message", "")
+    try:
+        parsed = json.loads(message)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
-    for _ in range(ENRICHMENT_POLL_ATTEMPTS):
-        results = logs.get_query_results(queryId=query_id)
-        if results.get("status") in ("Complete", "Failed", "Cancelled"):
-            break
-        time.sleep(ENRICHMENT_POLL_INTERVAL)
-    return results
+
+def build_alert_id(*parts):
+    material = "|".join(str(part) for part in parts if part is not None)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def is_expected_source(owner, log_group):
+    if EXPECTED_ACCOUNT_ID and owner != EXPECTED_ACCOUNT_ID:
+        return False
+    if log_group != LOG_GROUP:
+        return False
+    return True
+
+
+def process_subscription_event(event):
+    envelope = decode_subscription_event(event)
+
+    if envelope.get("messageType") == "CONTROL_MESSAGE":
+        return {"alerted": False, "reason": "CloudWatch Logs control message ignored"}
+
+    if envelope.get("messageType") != "DATA_MESSAGE":
+        return {
+            "alerted": False,
+            "reason": f"Unsupported CloudWatch Logs message type: {envelope.get('messageType', 'unknown')}",
+        }
+
+    owner = envelope.get("owner", "")
+    log_group = envelope.get("logGroup", "")
+    log_stream = envelope.get("logStream", "")
+    if not is_expected_source(owner, log_group):
+        return {"alerted": False, "reason": "Unexpected log source"}
+
+    results = []
+    for log_event in envelope.get("logEvents", []):
+        cowrie_event = log_event_to_json(log_event)
+        event_id = cowrie_event.get("eventid", "")
+        mapping = HIGH_CONFIDENCE_EVENTS.get(event_id)
+        if not mapping:
+            continue
+
+        detection, severity = mapping
+        event_time = normalize_event_time(cowrie_event.get("timestamp") or log_event.get("timestamp"))
+        alert_id = build_alert_id(owner, log_group, log_stream, log_event.get("id"), event_id, event_time)
+        payload = {
+            "alert_id": alert_id,
+            "detection": detection,
+            "severity": severity,
+            "event_time": event_time,
+            "sensor": SENSOR_ALIAS,
+            "count": 1,
+            "log_event_id": log_event.get("id"),
+        }
+        if cowrie_event.get("shasum"):
+            payload["sha256"] = cowrie_event["shasum"]
+
+        message_id = publish(f"{severity}: {detection}", payload)
+        results.append(
+            {
+                "alerted": True,
+                "alert_id": alert_id,
+                "detection": detection,
+                "message_id": message_id,
+            }
+        )
+
+    if not results:
+        return {"alerted": False, "reason": "No matching Cowrie events"}
+    if len(results) == 1:
+        return results[0]
+    return {"alerted": True, "alerts": results, "count": len(results)}
+
+
+def process_scheduled_query_event(event):
+    detail = event.get("detail", {})
+    if detail.get("status") != "Complete":
+        return {"alerted": False, "reason": "Query did not complete"}
+
+    resources = event.get("resources", [])
+    if CREDENTIAL_QUERY_ARN:
+        if CREDENTIAL_QUERY_ARN not in resources:
+            return {"alerted": False, "reason": "Unexpected scheduled query ARN"}
+    else:
+        return {"alerted": False, "reason": "CREDENTIAL_QUERY_ARN is not configured"}
+
+    if EXPECTED_ACCOUNT_ID and event.get("account") != EXPECTED_ACCOUNT_ID:
+        return {"alerted": False, "reason": "Unexpected account ID"}
+    if EXPECTED_REGION and event.get("region") != EXPECTED_REGION:
+        return {"alerted": False, "reason": "Unexpected Region"}
+
+    query_id = detail.get("queryId")
+    if not query_id:
+        raise ValueError("Scheduled-query event did not contain queryId")
+
+    response = logs.get_query_results(queryId=query_id)
+    if response.get("status") != "Complete":
+        return {
+            "alerted": False,
+            "reason": f"Query result status is {response.get('status', 'unknown')}",
+        }
+
+    rows = rows_to_dicts(response.get("results", []))
+    if not rows:
+        return {"alerted": False, "reason": "Query returned no detections"}
+
+    detection = rows[0].get("detection", "")
+    if detection != QUERY_MARKER:
+        return {"alerted": False, "reason": "Unexpected scheduled query marker"}
+
+    alert_id = build_alert_id(event.get("id"), query_id, detection, event.get("time"))
+    payload = {
+        "alert_id": alert_id,
+        "detection": detection,
+        "severity": "MEDIUM",
+        "event_time": event.get("time") or utc_now_iso(),
+        "sensor": SENSOR_ALIAS,
+        "count": len(rows),
+        "statistics": detail.get("statistics", {}),
+    }
+
+    message_id = publish("MEDIUM: Cowrie CREDENTIAL_GUESSING_BURST", payload)
+    return {"alerted": True, "alert_id": alert_id, "message_id": message_id}
 
 
 def lambda_handler(event, context):
+    if isinstance(event, dict) and "awslogs" in event:
+        return process_subscription_event(event)
+
     source = event.get("source")
     detail_type = event.get("detail-type")
-    detail = event.get("detail", {})
-
-    if source == "aws.cloudwatch" and detail_type == "CloudWatch Alarm State Change":
-        state = detail.get("state", {})
-        if state.get("value") != "ALARM":
-            return {"alerted": False, "reason": "Alarm is not in ALARM state"}
-
-        alarm_name = detail.get("alarmName", "unknown")
-
-        if alarm_name == "cowrie-login-success":
-            payload = {
-                "detection": "HONEYPOT_LOGIN_SUCCESS",
-                "severity": "HIGH",
-                "alarm": alarm_name,
-                "time": event.get("time"),
-                "region": event.get("region"),
-                "reason": state.get("reason", ""),
-                "next_step": (
-                    "Open CloudWatch Logs Insights and investigate recent "
-                    "cowrie.login.success events."
-                ),
-            }
-            message_id = publish("HIGH: Cowrie successful login", payload)
-            return {"alerted": True, "message_id": message_id}
-
-        if alarm_name == "cowrie-file-transfer":
-            enrichment = run_file_transfer_enrichment_query()
-            rows = rows_to_dicts(enrichment.get("results", []))
-            if rows:
-                next_step = (
-                    "Review the session, transfer metadata, and SHA-256 "
-                    "value. Do not execute the captured file."
-                )
-            else:
-                next_step = (
-                    "Open CloudWatch Logs Insights and investigate recent "
-                    "cowrie.session.file_upload and "
-                    "cowrie.session.file_download events."
-                )
-            payload = {
-                "detection": "FILE_TRANSFER",
-                "severity": "HIGH",
-                "alarm": alarm_name,
-                "time": event.get("time"),
-                "region": event.get("region"),
-                "reason": state.get("reason", ""),
-                "matched_rows": len(rows),
-                "results": rows[:MAX_ROWS_IN_ALERT],
-                "next_step": next_step,
-            }
-            message_id = publish("HIGH: Cowrie file transfer", payload)
-            return {
-                "alerted": True,
-                "message_id": message_id,
-                "enriched": bool(rows),
-            }
-
-        return {"alerted": False, "reason": f"Unhandled alarm: {alarm_name}"}
 
     if source == "aws.logs" and detail_type == "Scheduled Query Completed":
-        if detail.get("status") != "Complete":
-            return {"alerted": False, "reason": "Query did not complete"}
-
-        query_id = detail.get("queryId")
-        if not query_id:
-            raise ValueError("Scheduled-query event did not contain queryId")
-
-        response = logs.get_query_results(queryId=query_id)
-        if response.get("status") != "Complete":
-            return {
-                "alerted": False,
-                "reason": f"Query result status is {response.get('status', 'unknown')}",
-            }
-
-        rows = rows_to_dicts(response.get("results", []))
-        if not rows:
-            return {"alerted": False, "reason": "Query returned no detections"}
-
-        detection = rows[0].get("detection", "COWRIE_DETECTION")
-        severity_by_detection = {
-            "CREDENTIAL_GUESSING_BURST": "MEDIUM",
-            "FILE_TRANSFER": "HIGH",
-        }
-        next_step_by_detection = {
-            "CREDENTIAL_GUESSING_BURST": (
-                "Review authentication events for the source IP, then pivot "
-                "on its session identifiers in the private log group."
-            ),
-            "FILE_TRANSFER": (
-                "Review the session, transfer metadata, and SHA-256 value. "
-                "Do not execute the captured file."
-            ),
-        }
-        severity = severity_by_detection.get(detection, "MEDIUM")
-
-        payload = {
-            "detection": detection,
-            "severity": severity,
-            "time": event.get("time"),
-            "region": event.get("region"),
-            "matched_rows": len(rows),
-            "results": rows[:MAX_ROWS_IN_ALERT],
-            "statistics": detail.get("statistics", {}),
-            "next_step": next_step_by_detection.get(
-                detection,
-                "Pivot on src_ip and session in the private log group.",
-            ),
-        }
-        message_id = publish(f"{severity}: Cowrie {detection}", payload)
-        return {"alerted": True, "message_id": message_id}
+        return process_scheduled_query_event(event)
 
     return {"alerted": False, "reason": "Unsupported event type"}
