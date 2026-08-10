@@ -349,7 +349,8 @@
       el.textContent = fmt(target);
       return;
     }
-    if (animateValue._raf) cancelAnimationFrame(animateValue._raf);
+    // per-element handle so concurrent stat animations don't cancel each other
+    if (el._raf) cancelAnimationFrame(el._raf);
     var start = performance.now();
     var FLICKER = 260, COUNT = 640;
     function frame(now) {
@@ -365,11 +366,12 @@
         el.textContent = fmt(Math.round(target * p));
       } else {
         el.textContent = fmt(target);
+        el._raf = null;
         return;
       }
-      animateValue._raf = requestAnimationFrame(frame);
+      el._raf = requestAnimationFrame(frame);
     }
-    animateValue._raf = requestAnimationFrame(frame);
+    el._raf = requestAnimationFrame(frame);
   }
 
   function renderStats(stats) {
