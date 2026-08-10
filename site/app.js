@@ -1,790 +1,855 @@
-/* Honeypot Attack Map - dashboard logic.
-   Plain vanilla JS. Data: meta.json, live.json, archive.json (same origin). */
+/* SIGNAL / INTERCEPT — honeypot console
+   Plain vanilla JS. No framework, no chart library.
+   Network: relative fetch of meta.json, live.json, archive.json only. */
 (function () {
   'use strict';
 
-  var REFRESH_MS = 60000;
-  var MAX_BARS = 10;
-  var TICKER_ROWS = 60;
-  var COLOR_ACCENT = '#ff7a18';
-  var COLOR_BG = '#0f1113';
-  var COLOR_GLOBE = '#16191d';
+  /* ================= utilities ================= */
 
-  var state = {
-    meta: null,
-    live: null,
-    archive: null,
-    preset: 'all',            // 'all' | '7d' | '30d' | '24h' | 'custom'
-    customStart: null,        // 'YYYY-MM-DD'
-    customEnd: null,          // 'YYYY-MM-DD'
-    liveOk: false,
-    archiveOk: false,
-    metaAt: 0,
-    dataAt: 0,
-    tickerKeys: [],
-    tickerInit: false
-  };
+  function $(id) { return document.getElementById(id); }
 
-  var $ = function (id) { return document.getElementById(id); };
-  var reduceMotion = window.matchMedia &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function escapeHTML(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      switch (c) {
+        case '&': return '&amp;';
+        case '<': return '&lt;';
+        case '>': return '&gt;';
+        case '"': return '&quot;';
+        default: return '&#39;';
+      }
+    });
+  }
 
-  /* ---------------- helpers ---------------- */
+  function fmt(n) {
+    n = Number(n) || 0;
+    return n.toLocaleString('en-US');
+  }
 
-  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
-  function localISODate(d) {
+  function localDateStr(d) {
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   }
 
-  function todayISO() { return localISODate(new Date()); }
+  function todayStr() { return localDateStr(new Date()); }
 
-  function shiftISODate(iso, deltaDays) {
-    var p = String(iso).split('-');
-    var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2]));
-    if (isNaN(d.getTime())) return iso;
-    d.setUTCDate(d.getUTCDate() + deltaDays);
-    return d.getUTCFullYear() + '-' + pad2(d.getUTCMonth() + 1) + '-' + pad2(d.getUTCDate());
+  function addDaysStr(dateStr, days) {
+    var d = new Date(dateStr + 'T00:00:00');
+    d.setDate(d.getDate() + days);
+    return localDateStr(d);
   }
 
-  function clampISO(iso, min, max) {
-    if (!iso) return iso;
-    if (min && iso < min) return min;
-    if (max && iso > max) return max;
-    return iso;
+  /* ================= country flags (tiny inline SVGs, solid fills) ================= */
+
+  function flagURI(vRows, hStripes) {
+    var svg;
+    if (hStripes) {
+      // horizontal tricolor: vRows = [top, mid, bottom]
+      svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 10">' +
+        '<rect width="14" height="3.34" fill="' + vRows[0] + '"/>' +
+        '<rect y="3.33" width="14" height="3.34" fill="' + vRows[1] + '"/>' +
+        '<rect y="6.66" width="14" height="3.34" fill="' + vRows[2] + '"/></svg>';
+    } else {
+      // vertical tricolor: vRows = [left, mid, right]
+      svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 10">' +
+        '<rect width="4.67" height="10" fill="' + vRows[0] + '"/>' +
+        '<rect x="4.66" width="4.67" height="10" fill="' + vRows[1] + '"/>' +
+        '<rect x="9.33" width="4.67" height="10" fill="' + vRows[2] + '"/></svg>';
+    }
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
   }
 
-  function formatInt(n) {
-    n = Number(n);
-    if (!isFinite(n)) n = 0;
-    try { return Math.round(n).toLocaleString('en-US'); }
-    catch (e) { return String(Math.round(n)); }
+  function flagPlain(color) {
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 10">' +
+      '<rect width="14" height="10" fill="' + color + '"/></svg>';
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
   }
 
-  function parseTime(t) {
-    var d = new Date(t);
-    return isNaN(d.getTime()) ? null : d;
+  // backgroundImage covers every draw (incl. HK star / JP+KR discs / GB diagonals)
+  var FLAGS = {
+    CN: { backgroundImage: flagPlain('#de2910') },   // China
+    HK: { backgroundImage: flagPlain('#de2910') },   // Hong Kong
+    TW: { backgroundImage: flagPlain('#000095') },   // Taiwan
+    JP: { backgroundImage: flagPlain('#bc002d') },   // Japan
+    KR: { backgroundImage: flagPlain('#cd2e3a') },   // South Korea
+    RU: { backgroundImage: flagURI(['#ffffff', '#0039a6', '#d52b1e'], true) },
+    DE: { backgroundImage: flagURI(['#000000', '#dd0000', '#ffce00'], true) },
+    NL: { backgroundImage: flagURI(['#ae1c28', '#ffffff', '#21468b'], true) },
+    FR: { backgroundImage: flagURI(['#0055a4', '#ffffff', '#ef4135'], false) },
+    IT: { backgroundImage: flagURI(['#009246', '#ffffff', '#ce2b37'], false) },
+    IE: { backgroundImage: flagURI(['#169b62', '#ffffff', '#ff883e'], false) },
+    BE: { backgroundImage: flagURI(['#000000', '#fdda24', '#ef3340'], false) },
+    UA: { backgroundImage: flagURI(['#0057b7', '#ffd700', '#ffd700'], true) },
+    IN: { backgroundImage: flagURI(['#ff9933', '#ffffff', '#138808'], true) },
+    BG: { backgroundImage: flagURI(['#ffffff', '#00966e', '#d62612'], true) },
+    GB: { backgroundImage: flagPlain('#012169') },    // United Kingdom
+    US: { // United States — 7 red stripes + canton
+      backgroundColor: '#ffffff',
+      backgroundImage: flagURI(['#b22234', '#b22234', '#b22234'], true),
+      backgroundSize: '100% 53.85%',
+      overlay: { inset: '0 46% 53.8% 0', background: '#3c3b6e' }
+    },
+    BR: { backgroundImage: flagPlain('#009c3b') },    // Brazil
+    VN: { backgroundImage: flagPlain('#da251d') },    // Vietnam
+    SG: { backgroundImage: flagURI(['#ef3340', '#ffffff', '#ffffff'], true) },
+    PL: { backgroundImage: flagURI(['#ffffff', '#dc143c', '#dc143c'], true) }
+  };
+
+  var UNKNOWN_FLAG = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 10">' +
+    '<rect width="14" height="10" fill="#1e2328"/>' +
+    '<rect x="6.5" y="4.5" width="1" height="1" fill="#6b7280"/></svg>'
+  );
+
+  var CC_NAMES = {
+    CN: 'China', HK: 'Hong Kong', TW: 'Taiwan', JP: 'Japan', KR: 'South Korea',
+    RU: 'Russia', DE: 'Germany', NL: 'Netherlands', FR: 'France', IT: 'Italy',
+    IE: 'Ireland', BE: 'Belgium', UA: 'Ukraine', IN: 'India', BG: 'Bulgaria',
+    GB: 'United Kingdom', US: 'United States', BR: 'Brazil', VN: 'Vietnam',
+    SG: 'Singapore', PL: 'Poland'
+  };
+
+  function countryName(code) {
+    return CC_NAMES[code] || code || '??';
   }
 
-  function formatTime(t) {
-    var d = parseTime(t);
-    if (!d) return String(t == null ? '' : t);
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
-      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  function makeFlag(code) {
+    var span = document.createElement('span');
+    span.className = 'lflag';
+    span.setAttribute('aria-hidden', 'true');
+    var css = {
+      display: 'inline-block', width: '14px', height: '10px',
+      border: '1px solid #1e2328', position: 'relative', overflow: 'hidden',
+      backgroundRepeat: 'no-repeat'
+    };
+    var f = FLAGS[code];
+    for (var k in css) span.style[k] = css[k];
+    if (f) {
+      if (f.backgroundColor) span.style.backgroundColor = f.backgroundColor;
+      if (f.backgroundImage) span.style.backgroundImage = 'url("' + f.backgroundImage + '")';
+      if (f.backgroundSize) span.style.backgroundSize = f.backgroundSize;
+      if (f.overlay) {
+        var o = document.createElement('i');
+        o.style.position = 'absolute';
+        var ins = f.overlay.inset.split(' ');
+        o.style.top = ins[0]; o.style.right = ins[1];
+        o.style.bottom = ins[2]; o.style.left = ins[3];
+        o.style.background = f.overlay.background;
+        span.appendChild(o);
+      }
+    } else {
+      span.style.backgroundImage = 'url("' + UNKNOWN_FLAG + '")';
+    }
+    return span;
   }
 
-  function timeAgo(ms) {
-    var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-    if (s < 10) return 'just now';
-    if (s < 60) return s + ' sec ago';
-    var m = Math.floor(s / 60);
-    if (m < 60) return m + ' min ago';
-    var h = Math.floor(m / 60);
-    if (h < 24) return h + ' hr ago';
-    return Math.floor(h / 24) + ' d ago';
-  }
+  /* ================= state ================= */
 
-  function truncate(s, n) {
-    s = String(s == null ? '' : s);
-    return s.length > n ? s.slice(0, n - 1) + '…' : s;
-  }
+  var REFRESH_MS = 60000;
+  var TOP_N = 8;
+  var TICKER_MAX = 60;
 
-  /* ---------------- fetching ---------------- */
+  var state = {
+    preset: 'all',
+    customStart: null,
+    customEnd: null,
+    firstDate: null,
+    live: null,
+    archive: null,
+    view: null,       // { mode:'live'|'archive', stats, countries, ips, usernames, passwords, commands, recent, points, timeline }
+    tickerSeen: [],
+    lastFetchOk: null,
+    lastFetchAt: null
+  };
+
+  /* ================= fetch ================= */
 
   function fetchJSON(url) {
-    return fetch(url + (url.indexOf('?') === -1 ? '?' : '&') + '_=' + Date.now(), { cache: 'no-store' })
-      .then(function (res) {
-        if (!res.ok) throw new Error(url + ' -> HTTP ' + res.status);
-        return res.json();
-      });
+    return fetch(url, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error(url + ' -> HTTP ' + r.status);
+      return r.json();
+    });
   }
 
-  /* ---------------- count-up animation ---------------- */
+  function loadData() {
+    return Promise.all([
+      fetchJSON('meta.json'),
+      fetchJSON('live.json'),
+      fetchJSON('archive.json')
+    ]).then(function (res) {
+      var meta = res[0] || {};
+      state.firstDate = meta.first_data_date || (res[2] && res[2].first_data_date) || null;
+      state.live = res[1] || null;
+      state.archive = res[2] || null;
+      state.lastFetchOk = true;
+      state.lastFetchAt = new Date();
+      setLiveDot(true);
+      setUpdated(state.lastFetchAt, false);
+      clampCustomInputs();
+    }).catch(function (err) {
+      state.lastFetchOk = false;
+      setLiveDot(false);
+      showError('Feed unreachable — ' + (err && err.message ? err.message : 'network error') + '. Retrying every 60s.');
+      setUpdated(state.lastFetchAt, true);
+    });
+  }
 
-  function animateValue(el, to) {
-    to = Math.max(0, Math.round(Number(to) || 0));
-    if (reduceMotion) { el.textContent = formatInt(to); return; }
-    var from = parseInt(String(el.textContent).replace(/[^0-9-]/g, ''), 10);
-    if (!isFinite(from)) from = 0;
-    if (from === to) { el.textContent = formatInt(to); return; }
-    if (el._raf) cancelAnimationFrame(el._raf);
-    var dur = 700;
-    var start = performance.now();
-    function frame(now) {
-      var k = Math.min(1, (now - start) / dur);
-      var e = 1 - Math.pow(1 - k, 3); // ease-out cubic
-      el.textContent = formatInt(from + (to - from) * e);
-      if (k < 1) el._raf = requestAnimationFrame(frame);
-      else { el.textContent = formatInt(to); el._raf = null; }
+  function setLiveDot(ok) {
+    var d = $('liveDot');
+    if (d) d.classList.toggle('err', !ok);
+  }
+
+  function setUpdated(when, stale) {
+    var el = $('updated');
+    if (!el) return;
+    if (!when) { el.textContent = '—'; return; }
+    el.textContent = when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    el.classList.toggle('stale', !!stale);
+  }
+
+  function showError(msg) {
+    var b = $('errBanner');
+    if (!b) return;
+    b.textContent = msg;
+    b.classList.add('show');
+  }
+
+  function hideError() {
+    var b = $('errBanner');
+    if (b) b.classList.remove('show');
+  }
+
+  /* ================= data shaping ================= */
+
+  function liveView(live) {
+    var t = live && live.totals ? live.totals : {};
+    return {
+      mode: 'live',
+      stats: {
+        connections: t.connections || 0,
+        auth: t.auth_attempts || 0,
+        ips: t.unique_ips || 0,
+        commands: t.commands || 0
+      },
+      countries: (live.top_countries || []).map(function (c) {
+        return { label: c.country || countryName(c.code), code: c.code || '', count: c.count || 0 };
+      }),
+      ips: (live.top_ips || []).map(function (x) {
+        return { label: x.ip, code: x.country || '', count: x.count || 0 };
+      }),
+      usernames: (live.top_usernames || []).map(function (x) {
+        return { label: x.username, count: x.count || 0 };
+      }),
+      passwords: (live.top_passwords || []).map(function (x) {
+        return { label: x.password, count: x.count || 0 };
+      }),
+      commands: (live.top_commands || []).map(function (x) {
+        return { label: (x.command != null ? x.command : x.input), count: x.count || 0 };
+      }),
+      recent: live.recent_attacks || [],
+      points: live.geo_points || [],
+      timeline: (live.timeline || []).map(function (b) {
+        return { t: String(b.t || ''), connections: b.connections || 0, auth: b.auth || 0 };
+      })
+    };
+  }
+
+  function sumMapInto(acc, obj) {
+    if (!obj) return;
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) {
+        acc[k] = (acc[k] || 0) + (Number(obj[k]) || 0);
+      }
     }
-    el._raf = requestAnimationFrame(frame);
   }
 
-  function setStats(totals) {
-    totals = totals || {};
-    animateValue($('statConnections'), totals.connections || 0);
-    animateValue($('statAuth'), totals.auth_attempts || 0);
-    animateValue($('statIps'), totals.unique_ips || 0);
-    animateValue($('statCommands'), totals.commands || 0);
+  function mapToSortedRows(map, labelFn) {
+    var rows = [];
+    for (var k in map) {
+      if (Object.prototype.hasOwnProperty.call(map, k)) {
+        rows.push({ label: labelFn ? labelFn(k) : k, code: k, count: map[k] });
+      }
+    }
+    rows.sort(function (a, b) { return b.count - a.count; });
+    return rows.slice(0, TOP_N);
   }
 
-  /* ---------------- horizontal bar lists ---------------- */
+  function archiveView(days) {
+    var stats = { connections: 0, auth: 0, ips: 0, commands: 0 };
+    var countries = {}, usernames = {}, commands = {};
+    var geo = {}; // rounded lat,lon -> {lat,lon,count}
+    var timeline = [];
 
-  function renderBars(container, items, opts) {
-    opts = opts || {};
-    var limit = opts.limit || MAX_BARS;
-    if (!container) return;
-    container.textContent = '';
-    items = (items || []).slice(0, limit);
-    if (!items.length) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.textContent = 'No data for this range yet.';
-      container.appendChild(empty);
+    (days || []).forEach(function (d) {
+      stats.connections += d.connections || 0;
+      stats.auth += d.auth || 0;
+      stats.ips += d.unique_ips || 0; // summed per day; may overcount — acceptable
+      stats.commands += d.commands || 0;
+      sumMapInto(countries, d.countries);
+      sumMapInto(usernames, d.usernames);
+      sumMapInto(commands, d.top_commands);
+      (d.geo || []).forEach(function (g) {
+        var lat = Math.round(Number(g.lat) * 10) / 10;
+        var lon = Math.round(Number(g.lon) * 10) / 10;
+        if (!isFinite(lat) || !isFinite(lon)) return;
+        var key = lat + ',' + lon;
+        if (!geo[key]) geo[key] = { lat: lat, lon: lon, count: 0 };
+        geo[key].count += g.count || 0;
+      });
+      timeline.push({ t: d.date, connections: d.connections || 0, auth: d.auth || 0 });
+    });
+
+    var points = [];
+    for (var gk in geo) {
+      if (Object.prototype.hasOwnProperty.call(geo, gk)) points.push(geo[gk]);
+    }
+
+    return {
+      mode: 'archive',
+      stats: stats,
+      countries: mapToSortedRows(countries, countryName),
+      usernames: mapToSortedRows(usernames),
+      commands: mapToSortedRows(commands),
+      ips: null,        // 24h only
+      passwords: null,  // 24h only
+      recent: null,     // 24h only
+      points: points,
+      timeline: timeline
+    };
+  }
+
+  function computeView() {
+    if (state.preset === '24h') {
+      return state.live ? liveView(state.live) : liveView({});
+    }
+    var days = state.archive && state.archive.days ? state.archive.days : [];
+    var end = todayStr();
+    var start = null;
+    if (state.preset === '7d') start = addDaysStr(end, -6);
+    else if (state.preset === '30d') start = addDaysStr(end, -29);
+    else if (state.preset === 'custom') {
+      start = state.customStart;
+      end = state.customEnd || end;
+    }
+    var sel = days.filter(function (d) {
+      if (!d || !d.date) return false;
+      if (start && d.date < start) return false;
+      if (end && d.date > end) return false;
+      return true;
+    });
+    return archiveView(sel);
+  }
+
+  /* ================= stats (flicker + count-up) ================= */
+
+  function animateValue(el, target) {
+    if (!el) return;
+    target = Math.max(0, Math.floor(Number(target) || 0));
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      el.textContent = fmt(target);
       return;
     }
-    var max = 0;
-    for (var i = 0; i < items.length; i++) {
-      var c = Number(items[i].count) || 0;
-      if (c > max) max = c;
+    if (animateValue._raf) cancelAnimationFrame(animateValue._raf);
+    var start = performance.now();
+    var FLICKER = 260, COUNT = 640;
+    function frame(now) {
+      var t = now - start;
+      if (t < FLICKER) {
+        var digits = Math.max(1, String(target).length);
+        var s = '';
+        for (var i = 0; i < digits; i++) s += String((Math.random() * 10) | 0);
+        el.textContent = s;
+      } else if (t < FLICKER + COUNT) {
+        var p = (t - FLICKER) / COUNT;
+        p = 1 - Math.pow(1 - p, 3); // ease-out cubic
+        el.textContent = fmt(Math.round(target * p));
+      } else {
+        el.textContent = fmt(target);
+        return;
+      }
+      animateValue._raf = requestAnimationFrame(frame);
     }
-    if (max <= 0) max = 1; // divide-by-zero guard
-    items.forEach(function (it) {
-      var count = Number(it.count) || 0;
-      var pct = Math.max(count > 0 ? 2 : 0, Math.round((count / max) * 100));
-      var label = String(it.label);
+    animateValue._raf = requestAnimationFrame(frame);
+  }
 
+  function renderStats(stats) {
+    animateValue($('statConnections'), stats.connections);
+    animateValue($('statAuth'), stats.auth);
+    animateValue($('statIps'), stats.ips);
+    animateValue($('statCommands'), stats.commands);
+  }
+
+  /* ================= leader lists ================= */
+
+  function renderLeader(el, rows, opts) {
+    opts = opts || {};
+    if (!el) return;
+    el.textContent = '';
+    if (!rows) {
+      var hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.textContent = 'available in the Last 24h view';
+      el.appendChild(hint);
+      return;
+    }
+    if (!rows.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'awaiting first intercept';
+      el.appendChild(empty);
+      return;
+    }
+    var max = rows[0].count || 1;
+    rows.slice(0, TOP_N).forEach(function (r, i) {
       var row = document.createElement('div');
-      row.className = 'bar-row';
+      row.className = 'lrow' + (i === 0 ? ' lead' : '');
 
-      var name = document.createElement('div');
-      name.className = 'bar-name' + (opts.mono ? ' mono' : '');
-      name.textContent = label;
-      name.title = label;
+      var rank = document.createElement('span');
+      rank.className = 'lrank';
+      rank.textContent = pad2(i + 1);
+      row.appendChild(rank);
 
-      var val = document.createElement('div');
-      val.className = 'bar-value';
-      val.textContent = formatInt(count);
+      if (opts.flags) {
+        row.appendChild(makeFlag(r.code));
+      } else {
+        var spacer = document.createElement('span');
+        spacer.setAttribute('aria-hidden', 'true');
+        row.appendChild(spacer);
+      }
 
-      var track = document.createElement('div');
-      track.className = 'bar-track';
-      var fill = document.createElement('div');
-      fill.className = 'bar-fill';
+      var label = document.createElement('span');
+      label.className = 'llabel';
+      label.textContent = r.label == null || r.label === '' ? '(blank)' : String(r.label);
+      label.title = label.textContent;
+      row.appendChild(label);
+
+      var track = document.createElement('span');
+      track.className = 'ltrack';
+      var fill = document.createElement('span');
+      fill.className = 'lfill';
       track.appendChild(fill);
-
-      row.appendChild(name);
-      row.appendChild(val);
       row.appendChild(track);
-      container.appendChild(row);
 
+      var count = document.createElement('span');
+      count.className = 'lcount';
+      count.textContent = fmt(r.count);
+      row.appendChild(count);
+
+      el.appendChild(row);
+
+      // animate after insert
+      var pct = Math.max(1, Math.round((r.count / max) * 100));
       requestAnimationFrame(function () {
         requestAnimationFrame(function () { fill.style.width = pct + '%'; });
       });
     });
   }
 
-  function renderHint(el, text) {
-    if (!el) return;
-    el.textContent = '';
-    var d = document.createElement('div');
-    d.className = 'hint';
-    d.textContent = text;
-    el.appendChild(d);
-  }
+  /* ================= timeline (hand-rolled SVG) ================= */
 
-  /* ---------------- SVG timeline chart ---------------- */
+  var SVG_NS = 'http://www.w3.org/2000/svg';
 
-  function renderTimeline(el, items, opts) {
-    opts = opts || {};
-    if (!el) return;
-    el.textContent = '';
-    var W = 640, H = 180, padB = 4, padT = 12;
-    var svgNS = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(svgNS, 'svg');
+  function renderTimeline(view) {
+    var svg = $('tlChart');
+    if (!svg) return;
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+    var modeEl = $('activityMode');
+    if (modeEl) modeEl.textContent = view.mode === 'live' ? 'hourly · connections + auth' : 'daily · connections + auth';
+
+    var rows = view.timeline || [];
+    var W = 960, H = 200, padL = 42, padR = 8, padT = 14, padB = 26;
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    svg.setAttribute('preserveAspectRatio', 'none');
-    svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', 'Activity over time');
 
-    items = items || [];
-    var n = items.length;
+    function textEl(x, y, str, anchor) {
+      var t = document.createElementNS(SVG_NS, 'text');
+      t.setAttribute('x', x); t.setAttribute('y', y);
+      t.setAttribute('fill', '#6b7280');
+      t.setAttribute('font-size', '9');
+      t.setAttribute('font-family', 'Plex Mono, ui-monospace, monospace');
+      t.setAttribute('letter-spacing', '1');
+      if (anchor) t.setAttribute('text-anchor', anchor);
+      t.textContent = str;
+      return t;
+    }
 
-    if (!n) {
-      var t = document.createElementNS(svgNS, 'text');
-      t.setAttribute('x', W / 2);
-      t.setAttribute('y', H / 2);
-      t.setAttribute('text-anchor', 'middle');
-      t.setAttribute('class', 'chart-empty');
-      t.textContent = 'No data for this range yet.';
-      svg.appendChild(t);
-      el.appendChild(svg);
+    var startEl = $('activityStart'), endEl = $('activityEnd');
+    if (!rows.length) {
+      var base = document.createElementNS(SVG_NS, 'line');
+      base.setAttribute('x1', padL); base.setAttribute('x2', W - padR);
+      base.setAttribute('y1', H - padB); base.setAttribute('y2', H - padB);
+      base.setAttribute('stroke', '#1e2328'); base.setAttribute('stroke-width', '1');
+      svg.appendChild(base);
+      svg.appendChild(textEl((W + padL) / 2, H / 2, 'AWAITING FIRST INTERCEPT', 'middle'));
+      if (startEl) startEl.textContent = '';
+      if (endEl) endEl.textContent = '';
       return;
     }
 
-    var maxV = 0;
-    for (var i = 0; i < n; i++) {
-      var v = Math.max(0, Number(items[i].value) || 0);
-      if (v > maxV) maxV = v;
+    var maxV = 1;
+    rows.forEach(function (r) {
+      maxV = Math.max(maxV, r.connections, r.auth);
+    });
+
+    var innerW = W - padL - padR;
+    var innerH = H - padT - padB;
+    var baseY = H - padB;
+    var n = rows.length;
+    var band = innerW / n;
+    var tickW = Math.max(1.5, Math.min(4, band * 0.38));
+
+    // y gridlines + labels
+    var gridVals = [0, Math.round(maxV / 2), maxV];
+    gridVals.forEach(function (v) {
+      var y = baseY - (v / maxV) * innerH;
+      var ln = document.createElementNS(SVG_NS, 'line');
+      ln.setAttribute('x1', padL); ln.setAttribute('x2', W - padR);
+      ln.setAttribute('y1', y); ln.setAttribute('y2', y);
+      ln.setAttribute('stroke', v === 0 ? '#1e2328' : '#161a1e');
+      ln.setAttribute('stroke-width', '1');
+      svg.appendChild(ln);
+      svg.appendChild(textEl(padL - 6, y + 3, fmt(v), 'end'));
+    });
+
+    // tick marks: auth (dim, left half) + connections (orange, right half)
+    rows.forEach(function (r, i) {
+      var cx = padL + band * i + band / 2;
+      var hC = (r.connections / maxV) * innerH;
+      var hA = (r.auth / maxV) * innerH;
+      var half = tickW / 2;
+      if (r.auth > 0) {
+        var ra = document.createElementNS(SVG_NS, 'rect');
+        ra.setAttribute('x', cx - half); ra.setAttribute('width', half);
+        ra.setAttribute('y', baseY - hA); ra.setAttribute('height', Math.max(1, hA));
+        ra.setAttribute('fill', '#6b7280');
+        svg.appendChild(ra);
+      }
+      if (r.connections > 0) {
+        var rc = document.createElementNS(SVG_NS, 'rect');
+        rc.setAttribute('x', cx); rc.setAttribute('width', half);
+        rc.setAttribute('y', baseY - hC); rc.setAttribute('height', Math.max(1, hC));
+        rc.setAttribute('fill', '#ff7a18');
+        svg.appendChild(rc);
+      }
+      if (r.connections === 0 && r.auth === 0) {
+        var dot = document.createElementNS(SVG_NS, 'rect');
+        dot.setAttribute('x', cx - 0.5); dot.setAttribute('width', 1);
+        dot.setAttribute('y', baseY - 1); dot.setAttribute('height', 1);
+        dot.setAttribute('fill', '#6b7280');
+        svg.appendChild(dot);
+      }
+    });
+
+    // x labels: sparse
+    function xLabel(t) {
+      if (view.mode === 'live') return t.slice(11, 16); // HH:MM from "YYYY-MM-DD HH:00:00.000"
+      return t.slice(5); // MM-DD
     }
-    if (maxV <= 0) maxV = 1; // divide-by-zero guard
+    var labelEvery = Math.max(1, Math.ceil(n / 8));
+    rows.forEach(function (r, i) {
+      if (i % labelEvery !== 0 && i !== n - 1) return;
+      var cx = padL + band * i + band / 2;
+      var anchor = i === n - 1 ? 'end' : (i === 0 ? 'start' : 'middle');
+      svg.appendChild(textEl(cx, H - 10, xLabel(r.t), anchor));
+    });
 
-    var group = document.createElementNS(svgNS, 'g');
-    group.setAttribute('class', 'chart-bars');
-
-    var gap = 2;
-    var bw = (W - gap * (n - 1)) / n;
-    if (bw < 0.6) { gap = 0; bw = W / n; }
-
-    for (var j = 0; j < n; j++) {
-      var val = Math.max(0, Number(items[j].value) || 0);
-      var h = val <= 0 ? 0 : Math.max(2, (val / maxV) * (H - padT - padB));
-      var rect = document.createElementNS(svgNS, 'rect');
-      rect.setAttribute('x', (j * (bw + gap)).toFixed(2));
-      rect.setAttribute('y', (H - padB - h).toFixed(2));
-      rect.setAttribute('width', Math.max(0.6, bw).toFixed(2));
-      rect.setAttribute('height', h.toFixed(2));
-      if (bw >= 4) rect.setAttribute('rx', '1');
-      var title = document.createElementNS(svgNS, 'title');
-      title.textContent = items[j].label + ' · ' + formatInt(val);
-      rect.appendChild(title);
-      group.appendChild(rect);
-    }
-
-    svg.appendChild(group);
-    el.appendChild(svg);
+    if (startEl) startEl.textContent = rows[0].t.slice(0, 10);
+    if (endEl) endEl.textContent = rows[n - 1].t.slice(0, 10) + (view.mode === 'live' ? ' · UTC' : '');
   }
 
-  function setTimelineFoot(startText, endText, modeText) {
-    var s = $('activityStart'), e = $('activityEnd'), m = $('activityMode');
-    if (s) s.textContent = startText || '';
-    if (e) e.textContent = endText || '';
-    if (m) m.textContent = modeText || '';
+  /* ================= console ticker ================= */
+
+  function eventKey(a) {
+    return (a.time || '') + '|' + (a.ip || '') + '|' + (a.event || '') + '|' + (a.detail || '');
   }
 
-  /* ---------------- globe ---------------- */
+  function buildConsoleLine(a) {
+    var line = document.createElement('div');
+    line.className = 'c-line';
 
-  var G = {
-    world: null,
-    failed: false,
-    solidURL: null,
-    resizeHandler: null
-  };
+    var t = document.createElement('span');
+    t.className = 't';
+    var ts = String(a.time || '');
+    t.textContent = '[' + (ts.length > 19 ? ts.slice(0, 19) : ts) + ']';
+    line.appendChild(t);
 
-  function makeSolidImageURL() {
-    // Tiny solid-color canvas used as the globe texture -> solid dark sphere.
-    try {
-      var c = document.createElement('canvas');
-      c.width = 2; c.height = 2;
-      var ctx = c.getContext('2d');
-      ctx.fillStyle = COLOR_GLOBE;
-      ctx.fillRect(0, 0, 2, 2);
-      return c.toDataURL('image/png');
-    } catch (e) {
-      return null;
+    function kv(k, v, cls) {
+      var ks = document.createElement('span');
+      ks.className = 'k';
+      ks.textContent = ' ' + k + '=';
+      line.appendChild(ks);
+      var vs = document.createElement('span');
+      vs.className = cls || 'v';
+      vs.textContent = String(v == null ? '' : v);
+      line.appendChild(vs);
     }
+
+    kv('src', a.ip || '?');
+    kv('cc', a.country || '--');
+
+    var isCmd = a.event === 'command' || a.event === 'command.input';
+    kv('event', a.event || '?', 'ev' + (isCmd ? ' cmd' : ''));
+
+    var detail = a.detail == null ? '' : String(a.detail);
+    if (isCmd) {
+      kv('cmd', '"' + detail + '"');
+    } else if (detail.indexOf('/') !== -1) {
+      var parts = detail.split('/');
+      kv('u', parts[0]);
+      if (parts.length > 1) kv('p', parts.slice(1).join('/'));
+    } else if (detail) {
+      kv('d', detail);
+    }
+    return line;
   }
 
-  function globeUnavailable(msg) {
-    var el = $('globe');
-    if (!el) return;
-    el.textContent = '';
-    var d = document.createElement('div');
-    d.className = 'globe-placeholder';
-    d.textContent = msg || 'Globe unavailable.';
-    el.appendChild(d);
+  function renderTicker(recent) {
+    var box = $('console');
+    var note = $('tickerNote');
+    if (!box) return;
+    box.textContent = '';
+
+    if (!recent) {
+      if (note) note.textContent = 'available in the Last 24h view';
+      var hint = document.createElement('div');
+      hint.className = 'empty';
+      hint.textContent = 'available in the Last 24h view';
+      box.appendChild(hint);
+      appendCursor(box);
+      return;
+    }
+
+    if (note) note.textContent = 'raw event stream';
+
+    // newest first, dedupe by key
+    var items = recent.slice(0, TICKER_MAX);
+    var keys = items.map(eventKey);
+
+    if (!items.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'awaiting first intercept';
+      box.appendChild(empty);
+      appendCursor(box);
+      state.tickerSeen = [];
+      return;
+    }
+
+    // reveal line-by-line only for rows that are new since last paint
+    var stagger = 0;
+    items.forEach(function (a, i) {
+      var line = buildConsoleLine(a);
+      var isNew = state.tickerSeen.indexOf(keys[i]) === -1;
+      if (isNew && stagger < 14) {
+        line.style.animationDelay = (stagger * 90) + 'ms';
+        stagger++;
+      } else {
+        line.style.animation = 'none';
+        line.style.opacity = '1';
+      }
+      box.appendChild(line);
+    });
+    state.tickerSeen = keys;
+    appendCursor(box);
+  }
+
+  function appendCursor(box) {
+    var c = document.createElement('div');
+    c.className = 'c-cursor';
+    var prompt = document.createElement('span');
+    prompt.textContent = 'root@hp04:~#';
+    c.appendChild(prompt);
+    var block = document.createElement('span');
+    block.className = 'block';
+    block.setAttribute('aria-hidden', 'true');
+    c.appendChild(block);
+    box.appendChild(c);
+    box.scrollTop = 0; // newest at top
+  }
+
+  /* ================= globe ================= */
+
+  var world = null;
+  var globeOK = false;
+  var coordEl = null;
+
+  function makeSolidTexture() {
+    var cv = document.createElement('canvas');
+    cv.width = 8; cv.height = 4;
+    var ctx = cv.getContext('2d');
+    ctx.fillStyle = '#111417';
+    ctx.fillRect(0, 0, 8, 4);
+    return cv.toDataURL('image/png');
   }
 
   function initGlobe() {
     var el = $('globe');
+    coordEl = $('coordReadout');
     if (!el) return;
-    if (typeof Globe !== 'function') {
-      G.failed = true;
-      globeUnavailable('Globe unavailable — the WebGL globe library failed to load.');
+    if (typeof Globe === 'undefined') {
+      globeFallback(el);
       return;
     }
     try {
-      var world = Globe()(el);
-      G.solidURL = makeSolidImageURL();
-
-      world
-        .backgroundColor(COLOR_BG)
-        .showAtmosphere(false)
-        .showGraticules(false)
+      world = Globe()(el)
+        .backgroundColor('#0b0d0f')
+        .showAtmosphere(true)
+        .atmosphereColor('#ff7a18')
+        .atmosphereAltitude(0.12)
         .pointLat('lat')
         .pointLng('lon')
-        .pointColor(function () { return COLOR_ACCENT; })
-        .pointAltitude(function (d) { return Math.min(0.6, (Number(d.count) || 0) * 0.02 + 0.01); })
-        .pointRadius(function (d) { return Math.min(1.5, 0.35 + Math.sqrt(Number(d.count) || 0) * 0.12); })
-        .pointLabel(function () { return ''; });
+        .pointColor(function () { return '#ff7a18'; })
+        .pointAltitude(function (d) { return Math.min(0.55, 0.05 + Math.sqrt(d.count || 1) * 0.025); })
+        .pointRadius(function (d) { return 0.42 + Math.min(1.0, Math.sqrt(d.count || 1) * 0.11); })
+        .pointLabel(function (d) {
+          return '<div class="globe-tip"><span class="gt-label">' +
+            escapeHTML(d.country || countryName(d.code || '') || 'ORIGIN') + '</span>' +
+            escapeHTML(fmt(d.count)) + ' hits</div>';
+        });
 
-      // Solid dark sphere. Primary path: tint the globe material directly and
-      // drop any texture map (no async texture -> no race, no gradient/earth img).
-      // Fallback: a tiny solid-color data-URI texture via globeImageUrl.
-      var solidDone = false;
+      // lat/lon graticule grid for definition (dim hairlines, solid color)
+      try { world.showGraticules(true).graticuleColor('rgba(64,72,80,0.55)'); } catch (eg) { /* noop */ }
+
+      // force a solid sphere (no earth texture), a touch lighter than the bg
       try {
-        if (typeof world.globeMaterial === 'function') {
-          var mat = world.globeMaterial();
-          if (mat) {
-            if ('map' in mat && mat.map) mat.map = null;
-            if (mat.color && typeof mat.color.set === 'function') mat.color.set(COLOR_GLOBE);
-            mat.needsUpdate = true;
-            solidDone = true;
-          }
+        var mat = world.globeMaterial && world.globeMaterial();
+        if (mat) {
+          if (mat.color && mat.color.set) mat.color.set('#1a1f24');
+          if ('map' in mat) mat.map = null;
+          if (mat.shininess !== undefined) mat.shininess = 4;
+          mat.needsUpdate = true;
         }
-      } catch (e) { solidDone = false; }
-      if (!solidDone) {
-        G.solidURL = makeSolidImageURL();
-        if (G.solidURL) {
-          try { world.globeImageUrl(G.solidURL); solidDone = true; } catch (e) { /* noop */ }
-        }
+      } catch (e1) {
+        try { world.globeImageUrl(makeSolidTexture()); } catch (e2) { /* solid enough */ }
       }
 
       try {
-        var controls = world.controls();
-        controls.autoRotate = true;
-        controls.autoRotateSpeed = 0.6;
-        controls.enableZoom = false;
-      } catch (e) { /* controls optional */ }
+        var ctrl = world.controls();
+        ctrl.autoRotate = true;
+        ctrl.autoRotateSpeed = 0.55;
+        if ('enableZoom' in ctrl) ctrl.enableZoom = false;
+      } catch (e3) { /* controls unavailable */ }
 
-      function size() {
-        var w = el.clientWidth || 600;
-        var h = el.clientHeight || 400;
-        try { world.width(w).height(h); } catch (e) { /* noop */ }
+      var wrap = $('globeWrap');
+      var resize = function () {
+        if (!wrap || !world) return;
+        var r = wrap.getBoundingClientRect();
+        var w = Math.max(220, Math.floor(r.width));
+        var h = Math.max(220, Math.floor(r.height));
+        try { world.width(w).height(h); } catch (e4) { /* noop */ }
+      };
+      if (window.ResizeObserver && wrap) {
+        var ro = new ResizeObserver(resize);
+        ro.observe(wrap);
       }
-      size();
-      G.resizeHandler = function () { size(); };
-      window.addEventListener('resize', G.resizeHandler);
+      window.addEventListener('resize', resize);
+      resize();
 
-      G.world = world;
-    } catch (e) {
-      G.failed = true;
-      globeUnavailable('Globe unavailable on this browser.');
-    }
-  }
-
-  // HTML-escapes a string for safe use inside globe.gl's HTML tooltip label.
-  function escHTML(s) {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function renderGlobe(points) {
-    if (G.failed) return;
-    if (!G.world) return;
-    points = points || [];
-    try {
-      G.world.pointsData(points.map(function (p) {
-        return {
-          lat: Number(p.lat),
-          lon: Number(p.lon),
-          count: Number(p.count) || 0,
-          country: String(p.country || '')
-        };
-      }).filter(function (p) {
-        return isFinite(p.lat) && isFinite(p.lon);
-      }));
-      G.world.pointLabel(function (d) {
-        var where = d.country ? escHTML(d.country) + ' · ' : '';
-        return '<div class="globe-tip"><b>' + escHTML(formatInt(d.count)) + '</b> ' +
-          '<span>attacks &middot; ' + where + escHTML(d.lat.toFixed(1)) + ', ' + escHTML(d.lon.toFixed(1)) + '</span></div>';
-      });
-    } catch (e) { /* keep old points on error */ }
-  }
-
-  /* ---------------- archive aggregation ---------------- */
-
-  function mergeCountMap(into, from) {
-    if (!from) return;
-    for (var k in from) {
-      if (!Object.prototype.hasOwnProperty.call(from, k)) continue;
-      var v = Number(from[k]) || 0;
-      into[k] = (into[k] || 0) + v;
-    }
-  }
-
-  function mapToSortedArray(map, limit) {
-    var arr = [];
-    for (var k in map) {
-      if (Object.prototype.hasOwnProperty.call(map, k)) arr.push({ label: k, count: map[k] });
-    }
-    arr.sort(function (a, b) { return b.count - a.count || (a.label < b.label ? -1 : 1); });
-    return limit ? arr.slice(0, limit) : arr;
-  }
-
-  function geoKey(lat, lon) {
-    return lat.toFixed(2) + ',' + lon.toFixed(2);
-  }
-
-  // Aggregate archive day-buckets between startISO..endISO (inclusive).
-  function aggregateArchive(startISO, endISO) {
-    var days = (state.archive && Array.isArray(state.archive.days)) ? state.archive.days : [];
-    var totals = { connections: 0, auth_attempts: 0, unique_ips: 0, commands: 0, downloads: 0, uploads: 0 };
-    var countries = {}, usernames = {}, commands = {}, geo = {};
-    var timeline = [];
-
-    days.forEach(function (day) {
-      if (!day || !day.date) return;
-      if (startISO && day.date < startISO) return;
-      if (endISO && day.date > endISO) return;
-
-      totals.connections += Number(day.connections) || 0;
-      totals.auth_attempts += Number(day.auth) || 0;
-      totals.unique_ips += Number(day.unique_ips) || 0;
-      totals.commands += Number(day.commands) || 0;
-      totals.downloads += Number(day.downloads) || 0;
-      totals.uploads += Number(day.uploads) || 0;
-
-      mergeCountMap(countries, day.countries);
-      mergeCountMap(usernames, day.usernames);
-      mergeCountMap(commands, day.top_commands);
-
-      if (Array.isArray(day.geo)) {
-        day.geo.forEach(function (g) {
-          if (!g) return;
-          var lat = Number(g.lat), lon = Number(g.lon);
-          if (!isFinite(lat) || !isFinite(lon)) return;
-          var key = geoKey(lat, lon);
-          if (!geo[key]) geo[key] = { lat: lat, lon: lon, count: 0 };
-          geo[key].count += Number(g.count) || 0;
+      // coordinate readout under cursor
+      if (wrap && coordEl) {
+        wrap.addEventListener('pointermove', function (ev) {
+          var txt = null;
+          try {
+            if (world && typeof world.toGeoCoords === 'function') {
+              var rect = el.getBoundingClientRect();
+              var pt = world.toGeoCoords(ev.clientX - rect.left, ev.clientY - rect.top);
+              if (pt && isFinite(pt.lat) && isFinite(pt.lng)) {
+                txt = 'LAT ' + (pt.lat >= 0 ? '+' : '') + pt.lat.toFixed(2) +
+                      ' / LON ' + (pt.lng >= 0 ? '+' : '') + pt.lng.toFixed(2);
+              }
+            }
+          } catch (e5) { txt = null; }
+          coordEl.textContent = txt || 'SOL 33.95N 118.39W — USW2';
+          coordEl.classList.toggle('on', !!txt);
+        });
+        wrap.addEventListener('pointerleave', function () {
+          coordEl.textContent = 'HOVER SPHERE FOR COORDINATES';
+          coordEl.classList.remove('on');
         });
       }
 
-      timeline.push({ date: day.date, connections: Number(day.connections) || 0 });
-    });
-
-    timeline.sort(function (a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); });
-
-    var geoArr = [];
-    for (var k in geo) {
-      if (Object.prototype.hasOwnProperty.call(geo, k)) geoArr.push(geo[k]);
-    }
-
-    return {
-      totals: totals,
-      countries: mapToSortedArray(countries, MAX_BARS),
-      usernames: mapToSortedArray(usernames, MAX_BARS),
-      commands: mapToSortedArray(commands, MAX_BARS),
-      geo: geoArr,
-      timeline: timeline
-    };
-  }
-
-  /* ---------------- range resolution ---------------- */
-
-  function metaMinDate() {
-    var m = state.meta && state.meta.first_data_date;
-    if (!m && state.archive && state.archive.first_data_date) m = state.archive.first_data_date;
-    return m || null;
-  }
-
-  function currentRange() {
-    var min = metaMinDate();
-    var max = todayISO();
-    switch (state.preset) {
-      case '7d':
-        return { preset: '7d', start: clampISO(shiftISODate(max, -6), min, max), end: max };
-      case '30d':
-        return { preset: '30d', start: clampISO(shiftISODate(max, -29), min, max), end: max };
-      case 'custom':
-        if (state.customStart && state.customEnd) {
-          var s = clampISO(state.customStart, min, max);
-          var e = clampISO(state.customEnd, min, max);
-          if (s > e) { var tmp = s; s = e; e = tmp; }
-          return { preset: 'custom', start: s, end: e };
-        }
-        return { preset: 'all', start: min, end: max };
-      case 'all':
-      default:
-        return { preset: 'all', start: min, end: max };
+      globeOK = true;
+    } catch (e6) {
+      globeFallback(el);
     }
   }
 
-  /* ---------------- view models ---------------- */
-
-  function viewFromLive(live) {
-    live = live || {};
-    var t = live.totals || {};
-    var timeline = (Array.isArray(live.timeline) ? live.timeline : []).map(function (d) {
-      var lbl = d && d.t != null ? String(d.t) : '';
-      var dt = parseTime(lbl);
-      if (dt) lbl = dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()) +
-        ' ' + pad2(dt.getHours()) + ':00';
-      return {
-        label: lbl,
-        value: Number(d && d.connections) || 0,
-        auth: Number(d && d.auth) || 0
-      };
-    });
-    return {
-      mode: 'live',
-      totals: {
-        connections: Number(t.connections) || 0,
-        auth_attempts: Number(t.auth_attempts) || 0,
-        unique_ips: Number(t.unique_ips) || 0,
-        commands: Number(t.commands) || 0,
-        downloads: Number(t.downloads) || 0,
-        uploads: Number(t.uploads) || 0
-      },
-      countries: (Array.isArray(live.top_countries) ? live.top_countries : [])
-        .slice(0, MAX_BARS)
-        .map(function (d) {
-          return { label: String(d.country || d.code || '?'), count: Number(d.count) || 0 };
-        }),
-      usernames: (Array.isArray(live.top_usernames) ? live.top_usernames : [])
-        .slice(0, MAX_BARS)
-        .map(function (d) { return { label: String(d.username), count: Number(d.count) || 0 }; }),
-      commands: (Array.isArray(live.top_commands) ? live.top_commands : [])
-        .slice(0, MAX_BARS)
-        .map(function (d) { return { label: String(d.command), count: Number(d.count) || 0 }; }),
-      ips: (Array.isArray(live.top_ips) ? live.top_ips : [])
-        .slice(0, MAX_BARS)
-        .map(function (d) { return { label: String(d.ip), count: Number(d.count) || 0 }; }),
-      passwords: (Array.isArray(live.top_passwords) ? live.top_passwords : [])
-        .slice(0, MAX_BARS)
-        .map(function (d) { return { label: String(d.password), count: Number(d.count) || 0 }; }),
-      geo: Array.isArray(live.geo_points) ? live.geo_points : [],
-      timeline: timeline,
-      recent: Array.isArray(live.recent_attacks) ? live.recent_attacks : []
-    };
+  function globeFallback(el) {
+    globeOK = false;
+    el.textContent = '';
+    var d = document.createElement('div');
+    d.className = 'globe-fallback';
+    d.textContent = 'globe offline';
+    el.appendChild(d);
   }
 
-  function viewFromArchive(range) {
-    var agg = aggregateArchive(range.start, range.end);
-    return {
-      mode: 'archive',
-      totals: agg.totals,
-      countries: agg.countries,
-      usernames: agg.usernames,
-      commands: agg.commands,
-      ips: null,        // not available from the compact archive
-      passwords: null,  // not available from the compact archive
-      geo: agg.geo,
-      timeline: agg.timeline.map(function (d) {
-        return { label: d.date, value: d.connections };
-      }),
-      recent: null,
-      rangeLabel: (range.start || '…') + ' → ' + (range.end || '…')
-    };
+  function updateGlobe(points) {
+    if (!globeOK || !world) return;
+    try {
+      world.pointsData(points || []);
+      if (points && points.length) {
+        world.pointOfView({ lat: 22, lng: 12, altitude: 2.15 }, 900);
+      }
+    } catch (e) { /* keep last frame */ }
   }
 
-  /* ---------------- recent attacks ticker ---------------- */
-
-  function tickerRowKey(r) {
-    return [r.time, r.ip, r.country, r.event, r.detail].join('|');
-  }
-
-  function buildTickerRow(r, isNew) {
-    var row = document.createElement('div');
-    row.className = 'ticker-row' + (isNew ? ' new-row' : '');
-
-    function cell(text, cls) {
-      var d = document.createElement('span');
-      d.className = 'c ' + cls;
-      d.textContent = text;
-      return d;
-    }
-
-    row.appendChild(cell(formatTime(r.time), 't-time'));
-    row.appendChild(cell(String(r.ip == null ? '' : r.ip), 't-ip'));
-    row.appendChild(cell(String(r.country == null ? '' : r.country), 't-country'));
-    row.appendChild(cell(String(r.event == null ? '' : r.event), 't-event'));
-    row.appendChild(cell(truncate(r.detail == null ? '' : r.detail, 160), 't-detail'));
-    return row;
-  }
-
-  function renderTicker(recent) {
-    var wrap = $('ticker');
-    if (!wrap) return;
-    var list = (recent || []).slice().sort(function (a, b) {
-      var ta = parseTime(a && a.time), tb = parseTime(b && b.time);
-      var va = ta ? ta.getTime() : 0, vb = tb ? tb.getTime() : 0;
-      return vb - va;
-    }).slice(0, TICKER_ROWS);
-
-    var newKeys = list.map(tickerRowKey);
-    var newSet = {};
-    newKeys.forEach(function (k) { newSet[k] = true; });
-
-    var isNewData = state.tickerInit &&
-      list.length > 0 &&
-      (!state.tickerKeys.length || newKeys[0] !== state.tickerKeys[0]);
-
-    wrap.textContent = '';
-    if (!list.length) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.textContent = 'No recent attacks in the last 24h.';
-      wrap.appendChild(empty);
-    } else {
-      list.forEach(function (r) {
-        wrap.appendChild(buildTickerRow(r, isNewData));
-      });
-    }
-
-    state.tickerKeys = newKeys;
-    state.tickerInit = true;
-    void newSet;
-  }
-
-  /* ---------------- main render ---------------- */
+  /* ================= render orchestration ================= */
 
   function renderAll() {
-    var isLive = state.preset === '24h';
-    var vm;
-    if (isLive) {
-      if (!state.live) { showEmptyState('live'); return; }
-      vm = viewFromLive(state.live);
-    } else {
-      if (!state.archive) { showEmptyState('archive'); return; }
-      vm = viewFromArchive(currentRange());
-    }
+    var view = computeView();
+    state.view = view;
 
-    setStats(vm.totals);
-    renderGlobe(vm.geo);
-
-    var tl = vm.timeline || [];
-    var firstLbl = tl.length ? tl[0].label : '';
-    var lastLbl = tl.length ? tl[tl.length - 1].label : '';
-    if (isLive) {
-      setTimelineFoot(firstLbl, lastLbl, 'hourly · connections');
-    } else {
-      setTimelineFoot(firstLbl, lastLbl, 'daily · connections');
-    }
-    renderTimeline($('activityChart'), tl);
-
-    renderBars($('chartCountries'), vm.countries, { mono: false });
-    renderBars($('chartUsernames'), vm.usernames, { mono: true });
-    renderBars($('chartCommands'), vm.commands, { mono: true });
-
-    if (isLive) {
-      renderBars($('chartIps'), vm.ips, { mono: true });
-      renderBars($('chartPasswords'), vm.passwords, { mono: true });
-      renderTicker(vm.recent);
-    } else {
-      renderHint($('chartIps'), 'available in the Last 24h view');
-      renderHint($('chartPasswords'), 'available in the Last 24h view');
-      renderHint($('ticker'), 'available in the Last 24h view');
-    }
+    renderStats(view.stats);
+    renderLeader($('chartCountries'), view.countries, { flags: true });
+    renderLeader($('chartUsernames'), view.usernames);
+    renderLeader($('chartCommands'), view.commands);
+    renderLeader($('chartIps'), view.ips, { flags: true });
+    renderLeader($('chartPasswords'), view.passwords);
+    renderTimeline(view);
+    renderTicker(view.recent);
+    updateGlobe(view.points);
   }
 
-  function showEmptyState(which) {
-    setStats({ connections: 0, auth_attempts: 0, unique_ips: 0, commands: 0 });
-    renderTimeline($('activityChart'), []);
-    setTimelineFoot('', '', '');
-    renderGlobe([]);
-    renderBars($('chartCountries'), []);
-    renderBars($('chartUsernames'), []);
-    renderBars($('chartCommands'), []);
-    renderHint($('chartIps'), which === 'live' ? 'No data yet.' : 'available in the Last 24h view');
-    renderHint($('chartPasswords'), which === 'live' ? 'No data yet.' : 'available in the Last 24h view');
-    renderHint($('ticker'), which === 'live' ? 'No data yet.' : 'available in the Last 24h view');
-  }
-
-  /* ---------------- error banner / updated indicator ---------------- */
-
-  function updateBanner() {
-    var el = $('errorBanner');
-    if (!el) return;
-    var needLive = state.preset === '24h';
-    var activeOk = needLive ? state.liveOk : state.archiveOk;
-    if (activeOk) {
-      el.classList.remove('show');
-      el.textContent = '';
-    } else {
-      el.classList.add('show');
-      el.textContent = 'No data yet — could not load ' +
-        (needLive ? 'live.json' : 'archive.json') + '. Retrying every 60 seconds.';
-    }
-  }
-
-  function updateUpdatedText() {
-    var el = $('updated');
-    if (!el) return;
-    if (!state.dataAt) {
-      el.textContent = 'awaiting data';
-      return;
-    }
-    el.textContent = 'updated ' + timeAgo(state.dataAt);
-  }
-
-  /* ---------------- refresh loop ---------------- */
-
-  function refreshMeta() {
-    fetchJSON('meta.json').then(function (m) {
-      state.meta = m || null;
-      state.metaAt = Date.now();
-      applyDateBounds();
-    }).catch(function () { /* keep previous meta */ });
-  }
-
-  function refreshActive() {
-    var needLive = state.preset === '24h';
-    var url = needLive ? 'live.json' : 'archive.json';
-    fetchJSON(url).then(function (data) {
-      if (needLive) { state.live = data; state.liveOk = true; }
-      else { state.archive = data; state.archiveOk = true; }
-      state.dataAt = Date.now();
-      updateBanner();
-      updateUpdatedText();
-      renderAll();
-    }).catch(function () {
-      if (needLive) state.liveOk = false;
-      else state.archiveOk = false;
-      updateBanner();
-      updateUpdatedText();
-      if (needLive && !state.live) showEmptyState('live');
-      if (!needLive && !state.archive) showEmptyState('archive');
-    });
-  }
-
-  function refreshAll() {
-    refreshMeta();
-    refreshActive();
-  }
-
-  /* ---------------- range picker ---------------- */
-
-  function applyDateBounds() {
-    var min = metaMinDate();
-    var max = todayISO();
-    var s = $('customStart'), e = $('customEnd');
-    if (!s || !e) return;
-    if (min) { s.min = min; e.min = min; }
-    s.max = max; e.max = max;
-    if (!s.value) s.value = min || max;
-    if (!e.value) e.value = max;
-  }
+  /* ================= range controls ================= */
 
   function setPreset(p) {
     state.preset = p;
-    var btns = document.querySelectorAll('.preset-btn');
+    var btns = document.querySelectorAll('.r-btn');
     for (var i = 0; i < btns.length; i++) {
-      var b = btns[i];
-      if (b.getAttribute('data-preset') === p) b.classList.add('active');
-      else b.classList.remove('active');
+      btns[i].classList.toggle('active', btns[i].getAttribute('data-preset') === p);
     }
-    var custom = $('customRange');
-    if (custom) {
-      if (p === 'custom') custom.classList.add('open');
-      else custom.classList.remove('open');
-    }
+    var bar = $('customBar');
+    if (bar) bar.classList.toggle('open', p === 'custom');
     if (p === 'custom') {
-      // Re-render instantly with whatever dates are currently set.
+      // only render once both dates are valid
       var s = $('customStart'), e = $('customEnd');
-      if (s && e && s.value && e.value) {
+      if (s && e && s.value && e.value && s.value <= e.value) {
         state.customStart = s.value;
         state.customEnd = e.value;
+        renderAll();
       }
+    } else {
+      renderAll();
     }
-    updateBanner();
-    updateUpdatedText();
-    renderAll();
-    refreshActive(); // pull the dataset this mode needs right away
   }
 
-  function initRangePicker() {
-    var btns = document.querySelectorAll('.preset-btn');
+  function clampCustomInputs() {
+    var s = $('customStart'), e = $('customEnd');
+    if (!s || !e) return;
+    var min = state.firstDate || '2020-01-01';
+    var max = todayStr();
+    s.min = min; s.max = max;
+    e.min = min; e.max = max;
+    if (!s.value) s.value = min;
+    if (!e.value) e.value = max;
+    if (s.value < min) s.value = min;
+    if (s.value > max) s.value = max;
+    if (e.value < min) e.value = min;
+    if (e.value > max) e.value = max;
+  }
+
+  function wireControls() {
+    var btns = document.querySelectorAll('.r-btn');
     for (var i = 0; i < btns.length; i++) {
       (function (b) {
         b.addEventListener('click', function () {
@@ -796,29 +861,29 @@
     if (apply) {
       apply.addEventListener('click', function () {
         var s = $('customStart'), e = $('customEnd');
-        if (!s || !e || !s.value || !e.value) return;
+        if (!s || !e) return;
+        var ok = s.value && e.value && s.value <= e.value;
+        s.classList.toggle('invalid', !s.value || (!!e.value && s.value > e.value));
+        e.classList.toggle('invalid', !e.value || (!!s.value && s.value > e.value));
+        if (!ok) return;
         state.customStart = s.value;
         state.customEnd = e.value;
         state.preset = 'custom';
         renderAll();
       });
     }
-    var s = $('customStart'), e = $('customEnd');
-    [s, e].forEach(function (inp) {
-      if (!inp) return;
-      inp.addEventListener('keydown', function (ev) {
-        if (ev.key === 'Enter' && apply) apply.click();
-      });
-    });
   }
 
-  /* ---------------- reveal on scroll ---------------- */
+  /* ================= reveal on scroll ================= */
 
-  function initReveal() {
-    var panels = document.querySelectorAll('.panel.reveal');
-    if (!('IntersectionObserver' in window) || reduceMotion) {
-      for (var i = 0; i < panels.length; i++) panels[i].classList.add('in-view');
+  function wireReveal() {
+    var els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      for (var i = 0; i < els.length; i++) els[i].classList.add('in-view');
       return;
+    }
+    for (var j = 0; j < els.length; j++) {
+      els[j].style.setProperty('--d', (Math.min(j, 8) * 70) + 'ms');
     }
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
@@ -827,31 +892,34 @@
           io.unobserve(en.target);
         }
       });
-    }, { threshold: 0.08 });
-    for (var j = 0; j < panels.length; j++) io.observe(panels[j]);
+    }, { threshold: 0.12 });
+    for (var k = 0; k < els.length; k++) io.observe(els[k]);
   }
 
-  /* ---------------- init ---------------- */
+  /* ================= boot ================= */
 
-  function init() {
-    initRangePicker();
-    applyDateBounds();
-    initReveal();
+  function boot() {
+    wireControls();
+    wireReveal();
     initGlobe();
-    updateBanner();
-    updateUpdatedText();
-    refreshAll();
-    setInterval(refreshAll, REFRESH_MS);
-    setInterval(updateUpdatedText, 10000);
+    clampCustomInputs();
+    loadData().then(function () {
+      hideError();
+      renderAll();
+    });
+    setInterval(function () {
+      loadData().then(function () {
+        if (state.lastFetchOk) {
+          hideError();
+          renderAll();
+        }
+      });
+    }, REFRESH_MS);
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', boot);
   } else {
-    init();
+    boot();
   }
 })();
-
-
-
-
