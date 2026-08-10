@@ -216,7 +216,7 @@ After configuration, CloudWatch agent successfully sends logs to CloudWatch Logs
 
 ### Subscription Filter
 
-CloudWatch Logs **subscription filter** streams successful login, and file transfer events directly to the detector Lambda.
+CloudWatch Logs subscription filter streams **successful login**, and **file transfer events** directly to the detector Lambda.
 
 One subscription filter named `cowrie-high-confidence-events` is configured on the `/honeypot/cowrie` log group with the pattern:
 
@@ -240,17 +240,12 @@ CloudWatch Logs sends compressed events to Lambda. Lambda decodes and verifies t
 | `cowrie.session.file_upload` | `COWRIE_FILE_UPLOADED` | HIGH |
 | `cowrie.session.file_download` | `COWRIE_URL_PAYLOAD_DOWNLOADED` | HIGH |
 
-Sensitive fields (source IP, username, password, session ID, URL, filename, local path) remain in private CloudWatch Logs and are never included in alert emails.
+### Scheduled Query with DLQ
 
-### Scheduled Query
-
-CloudWatch's scheduled query is created to detect:
-
-**a. Credential Attempts in honeypot**
-
-  Accepted and rejected attempts are detected using query as below:
+CloudWatch's scheduled query is created to detect login attempts, using filter as below:
 
   ```
+
   fields "CREDENTIAL_GUESSING_BURST" as detection,
         src_ip,
         username,
@@ -261,19 +256,15 @@ CloudWatch's scheduled query is created to detect:
           count_distinct(username) as usernames,
           count_distinct(session) as sessions
     by detection, src_ip
-  | filter attempts >= 3
+  | filter attempts >= 5
   | sort attempts desc
+  
   ```
 
-  The query is run every 15 minutes indefinitely, with lookback of 15 minutes.
+The query is run every 5 minutes indefinitely, with lookback of 20 minutes.
 
-**b. File-transfers in honeypot**
+`cowrie-detector-dlq` is attached for when EventBridge can't successfully invoke the Lambda, CloudWatch alarm is assigned to detect if there's any event in the queue.
 
-~~File uploads and downloads in Cowrie are detected using a scheduled Logs Insights query run every 5 minutes with a 5-minute lookback.~~
-
-File uploads and downloads in Cowrie are detected using a metric filter and alarm. File transfer is a discrete high-confidence event, so it. Refer the _Metric Filter & Alarm_ section for the filter pattern and alarm configuration.
-
-With outbound HTTPS allowed, Cowrie captures files fetched by attackers through `wget`/`curl` and stores them in `var/lib/cowrie/downloads/` with a SHA-256, so both SCP/SFTP transfers and `wget`/`curl` fetches produce `file_upload` or `file_download` events carrying the `url`, `filename`, and `shasum` fields.
 
 ### SNS
 
