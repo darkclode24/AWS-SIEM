@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Public live dashboard of attacks against a Cowrie SSH honeypot.">
+<title>Honeypot Attack Map</title>
+<style>
+  :root{
+    --bg:#0f1113;
+    --panel:#16191d;
+    --border:#22262b;
+    --text:#e6e6e6;
+    --dim:#8a9096;
+    --accent:#ff7a18;
+    --track:#22262b;
+    --row-alt:#1b1f24;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:system-ui,-apple-system,"Segoe UI",Inter,Roboto,"Helvetica Neue",Arial,sans-serif;
+    font-size:14px;
+    line-height:1.45;
+    -webkit-font-smoothing:antialiased;
+  }
+  ::selection{ background:var(--accent); color:#0f1113; }
+  :focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+  a{ color:var(--accent); text-decoration:none; }
+  a:hover{ text-decoration:underline; }
+
+  .container{ max-width:1280px; margin:0 auto; padding:0 20px; }
+
+  /* ---------- header ---------- */
+  header.site-header{
+    position:sticky; top:0; z-index:50;
+    background:var(--bg);
+    border-bottom:1px solid var(--border);
+  }
+  .header-inner{
+    display:flex; align-items:center; justify-content:space-between;
+    flex-wrap:wrap; gap:12px; padding:14px 0;
+  }
+  .brand{ display:flex; align-items:center; gap:10px; }
+  .brand-dot{
+    width:10px; height:10px; border-radius:50%;
+    background:var(--accent); flex:0 0 auto;
+  }
+  .brand h1{
+    margin:0; font-size:15px; font-weight:800;
+    letter-spacing:0.22em; text-transform:uppercase; color:var(--text);
+  }
+  .header-right{ display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .updated{
+    font-size:11px; text-transform:uppercase; letter-spacing:0.12em; color:var(--dim);
+  }
+  .updated .stale{ color:var(--accent); }
+
+  /* ---------- range picker ---------- */
+  .range-picker{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .preset-btn{
+    appearance:none; border:1px solid var(--border); background:transparent;
+    color:var(--dim); font:inherit; font-size:11px; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.1em;
+    padding:6px 12px; border-radius:999px; cursor:pointer;
+    transition:color 150ms ease, border-color 150ms ease, background-color 150ms ease;
+  }
+  .preset-btn:hover{ color:var(--accent); border-color:var(--accent); }
+  .preset-btn.active{
+    background:var(--accent); border-color:var(--accent); color:#0f1113;
+  }
+  .custom-range{ display:none; align-items:center; gap:6px; }
+  .custom-range.open{ display:inline-flex; }
+  .custom-range input[type="date"]{
+    background:var(--panel); color:var(--text);
+    border:1px solid var(--border); border-radius:6px;
+    font:inherit; font-size:12px; padding:5px 8px;
+    color-scheme:dark;
+  }
+  .custom-range input[type="date"]:focus{ border-color:var(--accent); outline:none; }
+  .custom-range .sep{ color:var(--dim); font-size:12px; }
+  .apply-btn{
+    appearance:none; border:1px solid var(--accent); background:transparent;
+    color:var(--accent); font:inherit; font-size:11px; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.1em;
+    padding:6px 12px; border-radius:999px; cursor:pointer;
+    transition:background-color 150ms ease, color 150ms ease;
+  }
+  .apply-btn:hover{ background:var(--accent); color:#0f1113; }
+
+  /* ---------- main ---------- */
+  main{ padding:22px 0 10px; }
+  .error-banner{
+    display:none;
+    background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent);
+    border-radius:10px; padding:12px 16px; margin-bottom:18px;
+    color:var(--dim); font-size:13px;
+  }
+  .error-banner.show{ display:block; }
+
+  /* ---------- stat tiles ---------- */
+  .stats{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+    gap:14px; margin-bottom:18px;
+  }
+  .stat-tile{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:16px 18px;
+  }
+  .stat-value{
+    font-size:32px; font-weight:800; color:var(--accent);
+    font-variant-numeric:tabular-nums; line-height:1.1;
+  }
+  .stat-label{
+    margin-top:6px; font-size:10px; font-weight:600;
+    text-transform:uppercase; letter-spacing:0.16em; color:var(--dim);
+  }
+
+  /* ---------- panels ---------- */
+  .panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px; min-width:0;
+  }
+  .panel-title{
+    margin:0 0 14px; font-size:11px; font-weight:700;
+    text-transform:uppercase; letter-spacing:0.18em; color:var(--dim);
+  }
+  .panel.reveal{ opacity:0; transform:translateY(12px); transition:opacity 500ms ease, transform 500ms ease; }
+  .panel.reveal.in-view{ opacity:1; transform:none; }
+  @media (prefers-reduced-motion: reduce){
+    .panel.reveal{ opacity:1; transform:none; transition:none; }
+    .bar-fill, .chart-bars rect{ transition:none !important; }
+  }
+
+  /* ---------- globe ---------- */
+  .globe-panel{ margin-bottom:18px; padding:12px; }
+  .globe-panel .panel-title{ padding:6px 6px 0; }
+  #globe{
+    position:relative; width:100%; height:60vh; min-height:380px;
+    overflow:hidden; border-radius:8px;
+  }
+  #globe canvas{ display:block; }
+  .globe-placeholder{
+    height:100%; display:flex; align-items:center; justify-content:center;
+    color:var(--dim); font-size:13px; text-align:center; padding:20px;
+  }
+  .globe-tip{
+    background:#16191d; border:1px solid #22262b; border-radius:6px;
+    box-shadow:0 4px 14px #000000;
+    padding:6px 10px; font-size:12px; color:#e6e6e6;
+    font-family:system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
+    white-space:nowrap;
+  }
+  .globe-tip b{ color:#ff7a18; font-weight:700; }
+
+  /* ---------- 2-col grid ---------- */
+  .grid-2{
+    display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;
+  }
+
+  /* ---------- timeline chart ---------- */
+  .chart-wrap{ width:100%; }
+  .chart-wrap svg{ display:block; width:100%; height:auto; }
+  .chart-bars rect{
+    fill:var(--accent);
+    transition:width 400ms ease-out, y 400ms ease-out, height 400ms ease-out, x 400ms ease-out;
+  }
+  .chart-empty{
+    fill:var(--dim); font-size:12px;
+    font-family:system-ui,-apple-system,"Segoe UI",Inter,sans-serif;
+  }
+  .chart-foot{
+    display:flex; justify-content:space-between; margin-top:8px;
+    font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--dim);
+  }
+
+  /* ---------- horizontal bars ---------- */
+  .bars{ display:flex; flex-direction:column; gap:9px; }
+  .bar-row{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 10px; align-items:center; }
+  .bar-name{
+    min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-size:13px; color:var(--text);
+  }
+  .bar-name.mono{ font-family:var(--mono); font-size:12px; }
+  .bar-value{
+    font-size:12px; font-weight:700; color:var(--accent);
+    font-variant-numeric:tabular-nums; text-align:right;
+  }
+  .bar-track{
+    grid-column:1 / -1; height:8px; border-radius:4px;
+    background:var(--track); overflow:hidden;
+  }
+  .bar-fill{
+    display:block; height:100%; width:0;
+    background:var(--accent); border-radius:4px;
+    transition:width 400ms ease-out;
+  }
+
+  /* ---------- hints / empty states ---------- */
+  .hint, .empty-state{
+    color:var(--dim); font-size:12px; padding:14px 4px;
+  }
+
+  /* ---------- ticker ---------- */
+  .ticker-panel{ margin-bottom:14px; }
+  .ticker-head{
+    display:grid;
+    grid-template-columns:170px 140px 110px 120px minmax(0,1fr);
+    gap:12px; padding:0 10px 8px;
+    font-size:10px; font-weight:700; text-transform:uppercase;
+    letter-spacing:0.14em; color:var(--dim);
+    border-bottom:1px solid var(--border);
+  }
+  .ticker{ max-height:340px; overflow-y:auto; scrollbar-width:thin; scrollbar-color:var(--border) transparent; }
+  .ticker-row{
+    display:grid;
+    grid-template-columns:170px 140px 110px 120px minmax(0,1fr);
+    gap:12px; padding:7px 10px;
+    font-family:var(--mono); font-size:12px; color:var(--text);
+  }
+  .ticker-row:nth-child(even){ background:var(--row-alt); border-radius:6px; }
+  .ticker-row .c{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .ticker-row .t-event{ color:var(--accent); }
+  .ticker-row .t-time, .ticker-row .t-country{ color:var(--dim); }
+  @keyframes slideIn{
+    from{ opacity:0; transform:translateY(-6px); }
+    to{ opacity:1; transform:none; }
+  }
+  .ticker-row.new-row{ animation:slideIn 400ms ease-out; }
+  @media (prefers-reduced-motion: reduce){
+    .ticker-row.new-row{ animation:none; }
+  }
+
+  /* ---------- footer ---------- */
+  footer{
+    border-top:1px solid var(--border);
+    padding:18px 0 30px; text-align:center;
+  }
+  footer p{ margin:0; color:var(--dim); font-size:12px; }
+
+  /* ---------- responsive ---------- */
+  @media (max-width:900px){
+    .grid-2{ grid-template-columns:1fr; }
+    #globe{ height:52vh; }
+    .ticker-head{ display:none; }
+    .ticker-row{ grid-template-columns:150px 120px minmax(0,1fr); }
+    .ticker-row .t-country{ display:none; }
+    .ticker-row .t-detail{ grid-column:1 / -1; }
+  }
+</style>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container header-inner">
+    <div class="brand">
+      <span class="brand-dot" aria-hidden="true"></span>
+      <h1>Honeypot Attack Map</h1>
+    </div>
+    <div class="header-right">
+      <span id="updated" class="updated" role="status" aria-live="polite">awaiting data</span>
+      <nav class="range-picker" aria-label="Time range">
+        <button type="button" class="preset-btn active" data-preset="all">All</button>
+        <button type="button" class="preset-btn" data-preset="7d">7d</button>
+        <button type="button" class="preset-btn" data-preset="30d">30d</button>
+        <button type="button" class="preset-btn" data-preset="24h">Last 24h</button>
+        <button type="button" class="preset-btn" data-preset="custom">Custom</button>
+        <span id="customRange" class="custom-range">
+          <input type="date" id="customStart" aria-label="Start date">
+          <span class="sep">&rarr;</span>
+          <input type="date" id="customEnd" aria-label="End date">
+          <button type="button" id="customApply" class="apply-btn">Apply</button>
+        </span>
+      </nav>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+  <div id="errorBanner" class="error-banner" role="alert"></div>
+
+  <section class="stats" aria-label="Totals">
+    <div class="stat-tile">
+      <div id="statConnections" class="stat-value">0</div>
+      <div class="stat-label">Connections</div>
+    </div>
+    <div class="stat-tile">
+      <div id="statAuth" class="stat-value">0</div>
+      <div class="stat-label">Auth attempts</div>
+    </div>
+    <div class="stat-tile">
+      <div id="statIps" class="stat-value">0</div>
+      <div class="stat-label">Unique IPs</div>
+    </div>
+    <div class="stat-tile">
+      <div id="statCommands" class="stat-value">0</div>
+      <div class="stat-label">Commands</div>
+    </div>
+  </section>
+
+  <section class="panel globe-panel reveal" aria-label="Attack origin globe">
+    <h2 class="panel-title">Attack origins</h2>
+    <div id="globe"></div>
+  </section>
+
+  <section class="grid-2">
+    <div class="panel reveal" id="panelActivity">
+      <h2 class="panel-title">Activity</h2>
+      <div id="activityChart" class="chart-wrap"></div>
+      <div class="chart-foot">
+        <span id="activityStart"></span>
+        <span id="activityMode"></span>
+        <span id="activityEnd"></span>
+      </div>
+    </div>
+    <div class="panel reveal" id="panelCountries">
+      <h2 class="panel-title">Top attacking countries</h2>
+      <div id="chartCountries" class="bars"></div>
+    </div>
+    <div class="panel reveal" id="panelUsernames">
+      <h2 class="panel-title">Top usernames</h2>
+      <div id="chartUsernames" class="bars"></div>
+    </div>
+    <div class="panel reveal" id="panelCommands">
+      <h2 class="panel-title">Top commands</h2>
+      <div id="chartCommands" class="bars"></div>
+    </div>
+    <div class="panel reveal" id="panelIps">
+      <h2 class="panel-title">Top attacker IPs</h2>
+      <div id="chartIps"></div>
+    </div>
+    <div class="panel reveal" id="panelPasswords">
+      <h2 class="panel-title">Top passwords</h2>
+      <div id="chartPasswords"></div>
+    </div>
+  </section>
+
+  <section class="panel ticker-panel reveal" id="panelTicker">
+    <h2 class="panel-title">Recent attacks</h2>
+    <div id="tickerWrap">
+      <div class="ticker-head" aria-hidden="true">
+        <span>Time</span><span>IP</span><span>Country</span><span>Event</span><span>Detail</span>
+      </div>
+      <div id="ticker" class="ticker" role="log" aria-live="polite"></div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="container">
+    <p>Live data from a Cowrie SSH honeypot &middot; attacker data shown uncensored</p>
+  </div>
+</footer>
+
+<script src="globe.gl.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

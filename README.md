@@ -10,20 +10,21 @@ AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch ser
 
 To-Dos:
 
-- [ ] Change login success and credential-burst processing
-- [ ] Unblock Cowrie's egress firewall
-- [ ] Create Dashboard and viz
+- [x] Change login success and credential-burst processing
+- [x] Unblock Cowrie's egress firewall
+- [x] Create Dashboard and viz
 
 ## Event Flow
 
 1. Internet user connects to the Cowrie honeypot through TCP port 22.
 2. Cowrie records auth attempts, commands, sessions, timestamps, etc. activity as JSON events.
 3. CloudWatch Agent sends events to CloudWatch Logs.
-4. CloudWatch stores and analyzes the logs using Logs Insights queries, metric filters, alarms, and dashboards.
-5. Amazon EventBridge routes scheduled detection events & alarm state changes to detector Lambda function.
-6. Lambda evaluates the results, generates an alert when suspicious activity is detected.
-7. Alerts are delivered to Telegram through the notification pipeline.
-8. Raw logs are archived in a private S3 bucket, while sanitized statistics are published through a separate S3 bucket and CloudFront distribution.
+4. CloudWatch stores and analyzes the logs using Logs Insights queries and dashboards.
+5. A subscription filter streams successful-login and file-transfer events directly to the detector Lambda.
+6. Amazon EventBridge routes scheduled-query completion events to the detector Lambda function.
+7. Lambda evaluates the results, generates an alert when suspicious activity is detected.
+8. Alerts are delivered to Telegram through the notification pipeline.
+9. Raw logs are archived in a private S3 bucket, while sanitized statistics are published through a separate S3 bucket and CloudFront distribution.
 
 ## Services
 
@@ -33,9 +34,10 @@ Project uses the following AWS services :
 | - | - |
 | **Amazon EC2** | Hosts the Cowrie honeypot, CloudWatch Agent and GeoLite2 DB |
 | **Amazon CloudWatch** | Centralizes logs and provides queries, metrics, alarms, and dashboards |
-| **Amazon EventBridge** | Routes scheduled detection events and alarm state changes |
+| **Amazon EventBridge** | Routes scheduled-query completion events to the detector Lambda |
 | **Amazon Lambda** | Evaluates detection results and generates concise alerts |
 | **Amazon SNS** | Distributes alert notifications |
+| **Amazon SQS** | Dead-letter queue for failed EventBridge deliveries to Lambda |
 | **Amazon S3** | Archives raw logs and stores sanitized dashboard data |
 | **Amazon CloudFront** | Publishes the sanitized portfolio dashboard |
 
@@ -106,7 +108,7 @@ EC2 instance is attached with a role with policies below:
 
 a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core functionality
 
-b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs only to `/honeypot/cowrie` CloudWatch Logs group
+b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs to the `/honeypot/cowrie` log group and publish metrics to the `Cowrie/Host` namespace
 
 ### Installing Cowrie
 
@@ -207,7 +209,7 @@ Created `/honeypot/cowrie` log group to receive logs from Cowrie EC2 instance.
 
 CloudWatch agent is configured as below:
 
-Source &rarr; `/log/cowrie/cowrie.json`
+Source &rarr; `/home/cowrie/my-honeypot/var/log/cowrie/cowrie.json`
 Target &rarr; `/honeypot/cowrie`
 
 After configuration, CloudWatch agent successfully sends logs to CloudWatch Logs.
@@ -275,16 +277,58 @@ The query is run every 5 minutes indefinitely, with lookback of 20 minutes.
 `cowrie-detector` function is created using configuration as below:
 
 `python 3.14` runtime.
-`timeout = 30 seconds` to allow the enrichment query to start and poll on file-transfer alarms
-`env_variable = SNS_TOPIC_ARN`  to avoid hardcoding ARN
-`env_variable = COWRIE_LOG_GROUP`  for the file-transfer enrichment query
+`timeout = 15 seconds`
+`env_variable = SNS_TOPIC_ARN` to avoid hardcoding ARN
+`env_variable = COWRIE_LOG_GROUP` to validate the source log group
+`env_variable = EXPECTED_ACCOUNT_ID` to reject events from other accounts
+`env_variable = EXPECTED_REGION` to reject events from other Regions
+`env_variable = CREDENTIAL_QUERY_ARN` to accept only the credential-guessing scheduled query
 
 Lambda code is available [here](code/lambda.py)
 
 ### EventBridge
 
-Rule named `cowrie-login-success-to-detector` is created to receive `cowrie-login-success` alarm, and send it to `cowrie-detector` Lambda.
+Rule `cowrie-scheduled-queries-to-detector` is created to send the credential-guessing query's completion events to the `cowrie-detector` Lambda.
 
-Another rule named `cowrie-file-transfer-to-detector` is created to receive `cowrie-file-transfer` alarm, and send it to `cowrie-detector` Lambda. The Lambda then runs a short enrichment query to attach file metadata to the alert.
+Successful-login and file-transfer events skip EventBridge, instead the subscription filter delivers those directly to Lambda, so EventBridge carries only the aggregate detection.
 
-Another rule named `cowrie-scheduled-queries-to-detector` is created to send scheduled queries to `cowrie-detector` Lambda.
+The rule matches only this query:
+
+```json
+{
+  "source": ["aws.logs"],
+  "detail-type": ["Scheduled Query Completed"],
+  "resources": ["arn:aws:logs:ap-southeast-3:ACCOUNT_ID:scheduled-query:SCHEDULED_QUERY_ID"],
+  "detail": { "status": ["Complete"] }
+}
+```
+
+Each event carries a `queryId`, which Lambda uses to fetch result rows. The target also has the `cowrie-detector-dlq` queue attached, so failed invocations are preserved instead of dropped.
+
+## Public Dashboard
+
+A public, read-only attack dashboard is published through a private S3 bucket fronted by CloudFront (Origin Access Control). It shows attacker source IPs, usernames, passwords, and commands **intentionally uncensored**.
+
+**Live dashboard:** <https://d1dasr4e70r4do.cloudfront.net>
+
+![Public Dashboard](images/public-dashboard.png)
+
+### How it works
+
+An hourly EventBridge schedule invokes the `cowrie-dashboard-exporter` Lambda ([`code/exporter.py`](code/exporter.py)). The exporter runs CloudWatch Logs Insights queries over the last 24 hours against `/honeypot/cowrie`, geolocates source IPs with `ip-api.com`, aggregates the results, and writes three JSON documents to the bucket:
+
+| Object | Contents | Used for |
+|---|---|---|
+| `meta.json` | `first_data_date`, `generated_at` | Bounds the range picker |
+| `live.json` | Rich last-24 h view (globe points, top lists, recent attacks) | **Last 24h** view |
+| `archive.json` | Compact per-day aggregates, all-time | **All / 7d / 30d / custom** views |
+
+Because the archive is maintained incrementally one day-bucket per run, query cost stays flat regardless of how much history accumulates.
+
+### Front-end
+
+The site ([`site/`](site/)) is a single static page (plain HTML/CSS/JS, no framework) with a vendored copy of `globe.gl`. It renders an auto-rotating orthographic globe of attack origins, stat tiles, top-list bar charts, an activity timeline, and a recent-attacks ticker, all in a dark theme with a solid orange accent. A time-range picker (**All** by default, then `7d`, `30d`, `Last 24h`, custom) lets the viewer scope the data from the first sign of data to now. The rich per-IP detail and the live ticker are available in the **Last 24h** view.
+
+### Infrastructure
+
+Provisioning is scripted and idempotent in [`code/infra.ps1`](code/infra.ps1): S3 bucket (Block Public Access), the exporter IAM role, the Lambda, an SQS dead-letter queue, the hourly EventBridge rule, and a CloudFront distribution with OAC. The bucket stays private; only CloudFront can read it.
