@@ -12,34 +12,31 @@
 
 <div id="scanline" aria-hidden="true"></div>
 
-<!-- fixed left rail -->
-<aside id="rail">
-  <div class="rail-top">
-    <span class="rail-sig" aria-hidden="true"></span>
-    <span class="rail-brand">Signal<span class="b2"> / Intercept</span></span>
+<header id="topbar">
+  <div class="brand">
+    <span class="brand-title">Signal<span class="dim">/</span>Intercept</span>
   </div>
-  <nav class="rail-nav" aria-label="Time range">
-    <button type="button" class="r-btn active" data-preset="all">All</button>
-    <button type="button" class="r-btn" data-preset="7d">7d</button>
-    <button type="button" class="r-btn" data-preset="30d">30d</button>
-    <button type="button" class="r-btn" data-preset="24h">24h</button>
-    <button type="button" class="r-btn" data-preset="custom">Cust</button>
-  </nav>
-  <div class="rail-bottom">
-    <span id="liveDot" aria-hidden="true"></span>
-    <span class="rail-live">Live</span>
+  <div class="top-right">
+    <div class="range" role="group" aria-label="Time range">
+      <button type="button" class="r-btn active" data-preset="all">All</button>
+      <button type="button" class="r-btn" data-preset="30d">30d</button>
+      <button type="button" class="r-btn" data-preset="7d">7d</button>
+      <button type="button" class="r-btn" data-preset="24h">24h</button>
+      <button type="button" class="r-btn" data-preset="custom">Cust</button>
+    </div>
   </div>
-</aside>
+</header>
 
-<div id="main">
+<main class="wrap">
 
-  <header id="hero" class="wrap">
+  <div id="errBanner" role="alert"></div>
+
+  <section id="hero" class="wrap-inner">
     <div class="hero-left">
-      <p class="hero-eyebrow"><span class="sig" aria-hidden="true"></span>Cowrie SSH honeypot &mdash; public intercept feed</p>
       <h1 class="hero-title">Signal<span class="dim">/</span>Intercept</h1>
-      <p class="hero-sub">Every line below is an unsolicited connection to a server that exists only to be attacked. Nothing here is legitimate traffic.</p>
+      <p class="hero-sub">Gathered honeypot data from attackers</p>
 
-      <div id="customBar">
+      <div id="customBar" class="custom">
         <label for="customStart">From</label>
         <input type="date" id="customStart">
         <span class="c-sep">&rarr;</span>
@@ -84,82 +81,69 @@
         <div id="coordReadout">HOVER SPHERE FOR COORDINATES</div>
       </div>
     </div>
-  </header>
+  </section>
 
-  <main class="wrap">
-    <div id="errBanner" role="alert"></div>
-
-    <section id="data">
-      <div class="panel wide reveal" id="panelActivity">
-        <div class="panel-head">
-          <h2 class="panel-title">Activity</h2>
-          <span class="panel-note" id="activityMode">hourly</span>
-        </div>
-        <svg id="tlChart" role="img" aria-label="Activity timeline"></svg>
-        <div class="tl-foot">
-          <span id="activityStart"></span>
-          <span id="activityEnd"></span>
-        </div>
+  <section id="data" class="wrap-inner">
+    <div class="panel wide reveal" id="panelActivity">
+      <div class="panel-head">
+        <h2 class="panel-title">Activity</h2>
+        <span class="panel-note" id="activityMode">daily</span>
       </div>
-
-      <div class="panel reveal" id="panelCountries">
-        <div class="panel-head">
-          <h2 class="panel-title">Top countries</h2>
-          <span class="panel-note">by connection</span>
-        </div>
-        <div id="chartCountries" class="leader"></div>
+      <svg id="tlChart" role="img" aria-label="Activity timeline"></svg>
+      <div class="tl-foot">
+        <span id="activityStart"></span>
+        <span id="activityEnd"></span>
       </div>
+    </div>
 
-      <div class="panel reveal" id="panelUsernames">
-        <div class="panel-head">
-          <h2 class="panel-title">Top usernames</h2>
-          <span class="panel-note">auth attempts</span>
-        </div>
-        <div id="chartUsernames" class="leader"></div>
+    <div class="panel reveal" id="panelSources">
+      <div class="panel-head">
+        <h2 class="panel-title">Attack sources</h2>
       </div>
+      <div id="chartCountries" class="leader"></div>
+    </div>
 
-      <div class="panel reveal" id="panelCommands">
-        <div class="panel-head">
-          <h2 class="panel-title">Top commands</h2>
-          <span class="panel-note">post-auth shell</span>
-        </div>
-        <div id="chartCommands" class="leader"></div>
+    <div class="panel reveal" id="panelIps">
+      <div class="panel-head">
+        <h2 class="panel-title">Top attacker IPs</h2>
+        <span class="panel-note">by connection</span>
       </div>
+      <div id="chartIps" class="leader"></div>
+    </div>
 
-      <div class="panel reveal" id="panelIps">
-        <div class="panel-head">
-          <h2 class="panel-title">Top attacker IPs</h2>
-          <span class="panel-note">by connection</span>
-        </div>
-        <div id="chartIps" class="leader"></div>
+    <div class="panel reveal" id="panelUsernames">
+      <div class="panel-head">
+        <h2 class="panel-title">Top usernames</h2>
+        <span class="panel-note">auth attempts</span>
       </div>
+      <div id="chartUsernames" class="leader"></div>
+    </div>
 
-      <div class="panel reveal" id="panelPasswords">
-        <div class="panel-head">
-          <h2 class="panel-title">Top passwords</h2>
-          <span class="panel-note">auth attempts</span>
-        </div>
-        <div id="chartPasswords" class="leader"></div>
+    <div class="panel reveal" id="panelCommands">
+      <div class="panel-head">
+        <h2 class="panel-title">Top commands</h2>
+        <span class="panel-note">post-auth shell</span>
       </div>
+      <div id="chartCommands" class="leader"></div>
+    </div>
 
-      <div class="panel wide reveal" id="panelTicker">
-        <div class="panel-head">
-          <h2 class="panel-title">Recent intercepts</h2>
-          <span class="panel-note" id="tickerNote">raw event stream</span>
-        </div>
-        <div id="console" class="console" role="log" aria-live="polite"></div>
+    <div class="panel wide reveal" id="panelTicker">
+      <div class="panel-head">
+        <h2 class="panel-title">Recent intercepts</h2>
+        <span class="panel-note" id="tickerNote">raw event stream&nbsp;&middot;&nbsp;24h only</span>
       </div>
-    </section>
-  </main>
+      <div id="console" class="console" role="log" aria-live="polite"></div>
+    </div>
+  </section>
 
   <footer>
-    <div class="wrap foot-inner">
+    <div class="wrap-inner foot-inner">
       <p class="foot-line">Live feed from a Cowrie SSH honeypot &mdash; attacker data shown uncensored.</p>
       <p class="foot-line">Updated <span id="updated" role="status" aria-live="polite">&mdash;</span></p>
     </div>
   </footer>
 
-</div>
+</main>
 
 <script src="globe.gl.min.js"></script>
 <script src="app.js"></script>

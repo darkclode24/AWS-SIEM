@@ -152,26 +152,125 @@ aws lambda add-permission --function-name $FunctionName --region $Region --state
     --action "lambda:InvokeFunction" --principal "events.amazonaws.com" --source-arn $RuleArn | Out-Null
 
 # Target with DLQ
-$target = @(@{
+# PS 5.1 ConvertTo-Json collapses a single-element array when piped; pass it
+# as -InputObject so --targets gets a JSON array [{...}].
+$target = ConvertTo-Json -InputObject @(@{
     Id = "exporter"
     Arn = $LambdaArn
     DeadLetterConfig = @{ Arn = $DlqArn }
-}) | ConvertTo-Json -Depth 6 -Compress
+}) -Depth 6 -Compress
 $tgtFile = Join-Path $env:TEMP "targets.json"; Set-Content -Path $tgtFile -Value $target
 aws events put-targets --rule $RuleName --region $Region --targets "file://$tgtFile" | Out-Null
 Ok "Schedule -> Lambda (with DLQ) wired."
+
+# --- 5b. Raw event archive (permanent raw log store) ------------------------
+#
+# A second subscription filter on /honeypot/cowrie feeds a Lambda that mirrors
+# every raw Cowrie event to a private, versioned S3 bucket. This survives the
+# log group's 14-day retention. See INFRA.md.
+$RawBucketName = "cowrie-raw-archive-$($BucketName -replace '^cowrie-public-dashboard-','')"
+Info "Ensuring raw archive bucket: $RawBucketName"
+$rawExists = aws s3api head-bucket --bucket $RawBucketName 2>$null; if ($LASTEXITCODE -eq 0) {
+    Warn "Raw bucket already exists, reusing."
+} else {
+    aws s3api create-bucket --bucket $RawBucketName --region $Region `
+        --create-bucket-configuration LocationConstraint=$Region | Out-Null
+    if ($LASTEXITCODE -ne 0) { Die "create-bucket failed for $RawBucketName" }
+    Ok "Raw bucket created."
+}
+aws s3api put-public-access-block --bucket $RawBucketName --public-access-block-configuration `
+    "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true" | Out-Null
+aws s3api put-bucket-versioning --bucket $RawBucketName --region $Region `
+    --versioning-configuration Status=Enabled | Out-Null
+Ok "Raw bucket Block Public Access + Versioning enabled."
+
+$RawRoleName = "cowrie-raw-archiver-role"
+$rawTrust = @{
+    Version = "2012-10-17"
+    Statement = @(@{
+        Effect = "Allow"
+        Principal = @{ Service = "lambda.amazonaws.com" }
+        Action = "sts:AssumeRole"
+    })
+} | ConvertTo-Json -Depth 6 -Compress
+Info "Ensuring raw archiver IAM role: $RawRoleName"
+$rawRoleArn = $null
+$rawExisting = aws iam get-role --role-name $RawRoleName 2>$null | ConvertFrom-Json
+if ($rawExisting) { $rawRoleArn = $rawExisting.Role.Arn; Warn "Raw role exists, reusing." }
+else {
+    $rawTrustFile = Join-Path $env:TEMP "raw-trust.json"; Set-Content -Path $rawTrustFile -Value $rawTrust
+    $rr = aws iam create-role --role-name $RawRoleName --assume-role-policy-document "file://$rawTrustFile" | ConvertFrom-Json
+    $rawRoleArn = $rr.Role.Arn
+    aws iam attach-role-policy --role-name $RawRoleName `
+        --policy-arn "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole" | Out-Null
+    Ok "Raw role created: $rawRoleArn"
+}
+$rawPolicy = @{
+    Version = "2012-10-17"
+    Statement = @(@{
+        Effect = "Allow"
+        Action = @("s3:PutObject")
+        Resource = "arn:aws:s3:::$RawBucketName/raw/*"
+    })
+} | ConvertTo-Json -Depth 8 -Compress
+$rawPolFile = Join-Path $env:TEMP "raw-policy.json"; Set-Content -Path $rawPolFile -Value $rawPolicy
+aws iam put-role-policy --role-name $RawRoleName --policy-name "cowrie-raw-archiver-policy" --policy-document "file://$rawPolFile" | Out-Null
+Ok "Raw inline policy attached."
+Start-Sleep -Seconds 8   # IAM propagation
+
+$RawFunctionName = "cowrie-raw-archiver"
+$rawZip = Join-Path $env:TEMP "raw_archiver.zip"
+Info "Packaging raw archiver..."
+if (Test-Path $rawZip) { Remove-Item $rawZip -Force }
+Compress-Archive -Path (Join-Path $root "code\raw_archiver.py") -DestinationPath $rawZip -Force
+$rawEnv = "Variables={ARCHIVE_BUCKET=$RawBucketName}"
+$rawFn = aws lambda get-function --function-name $RawFunctionName --region $Region 2>$null | ConvertFrom-Json
+if ($rawFn) {
+    Warn "Raw Lambda exists, updating code + config."
+    aws lambda update-function-code --function-name $RawFunctionName --zip-file "fileb://$rawZip" --region $Region | Out-Null
+    Start-Sleep -Seconds 3
+    aws lambda update-function-configuration --function-name $RawFunctionName --region $Region `
+        --timeout 30 --memory-size 128 --environment $rawEnv | Out-Null
+} else {
+    Info "Creating raw archiver Lambda: $RawFunctionName"
+    aws lambda create-function --function-name $RawFunctionName --region $Region `
+        --runtime python3.14 --handler raw_archiver.lambda_handler --role $rawRoleArn `
+        --zip-file "fileb://$rawZip" --timeout 30 --memory-size 128 --environment $rawEnv | Out-Null
+    Ok "Raw Lambda created."
+}
+$rawFnOut = aws lambda get-function --function-name $RawFunctionName --region $Region | ConvertFrom-Json
+$RawLambdaArn = $rawFnOut.Configuration.FunctionArn
+Ok "Raw Lambda ARN: $RawLambdaArn"
+
+# Subscription filter on /honeypot/cowrie -> raw archiver (2nd filter; limit is 2)
+$FilterName = "cowrie-raw-archive-all"
+Info "Ensuring subscription filter: $FilterName"
+aws lambda add-permission --function-name $RawFunctionName --region $Region --statement-id "AllowCloudWatchLogsRaw" `
+    --action "lambda:InvokeFunction" --principal "logs.amazonaws.com" --source-arn "arn:aws:logs:${Region}:${AccountId}:log-group:/honeypot/cowrie:*" 2>$null | Out-Null
+aws logs put-subscription-filter --log-group-name "/honeypot/cowrie" --region $Region `
+    --filter-name $FilterName --filter-pattern '{ $.eventid = "cowrie.*" }' `
+    --destination-arn $RawLambdaArn | Out-Null
+Ok "Raw archive subscription filter wired."
 
 # --- 6. Upload static site --------------------------------------------------
 Info "Uploading site files to s3://$BucketName ..."
 Get-ChildItem $siteDir -File | ForEach-Object {
     $ct = switch ($_.Extension) {
         ".html" { "text/html" }
+        ".css"  { "text/css" }
         ".js"   { "application/javascript" }
         ".json" { "application/json" }
         default { "application/octet-stream" }
     }
     aws s3 cp $_.FullName "s3://$BucketName/$($_.Name)" --content-type $ct --region $Region | Out-Null
     Ok "  uploaded $($_.Name)"
+}
+# Upload fonts/ subdir (Plex Mono woff2) with correct content-type
+if (Test-Path (Join-Path $siteDir "fonts")) {
+    Get-ChildItem (Join-Path $siteDir "fonts") -File | ForEach-Object {
+        aws s3 cp $_.FullName "s3://$BucketName/fonts/$($_.Name)" --content-type "font/woff2" --region $Region | Out-Null
+        Ok "  uploaded fonts/$($_.Name)"
+    }
 }
 
 # --- 7. CloudFront OAC + distribution --------------------------------------
@@ -267,6 +366,7 @@ Write-Host "Bucket        : $BucketName"
 Write-Host "Lambda        : $FunctionName  ($LambdaArn)"
 Write-Host "DLQ           : $DlqName  ($DlqArn)"
 Write-Host "Schedule      : $RuleName  (rate(1 hour))"
+Write-Host "Raw Archive   : $RawBucketName  ($RawFunctionName)"
 Write-Host "Distribution  : $DistId"
 Write-Host "Dashboard URL : https://$DistDomain"
 Write-Host "================================================"

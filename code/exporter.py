@@ -318,6 +318,7 @@ def build_day_bucket(now):
 
     countries = {}
     geo_pts = {}
+    ips = {}
     for r in ip_rows:
         ip = r.get("src_ip", "")
         cnt = int(float(r.get("count", 0) or 0))
@@ -330,6 +331,7 @@ def build_day_bucket(now):
         if g.get("lat") is not None and g.get("lon") is not None:
             key = (round(g["lat"], 1), round(g["lon"], 1))
             geo_pts[key] = geo_pts.get(key, 0) + cnt
+        ips[ip] = {"count": cnt, "country": code or ""}
 
     # totals for the day from the timeline query
     timeline_rows = run_query(Q_TOTALS_TIMELINE, start, now)
@@ -341,6 +343,7 @@ def build_day_bucket(now):
         # per-day top lists (maps of value -> count)
         "countries": dict(sorted(countries.items(), key=lambda x: -x[1])[:15]),
         "usernames": {}, "top_commands": {},
+        "ips": dict(sorted(ips.items(), key=lambda x: -x[1]["count"])[:25]),
         "geo": [{"lat": k[0], "lon": k[1], "count": v} for k, v in
                 sorted(geo_pts.items(), key=lambda x: -x[1])[:60]],
     }
