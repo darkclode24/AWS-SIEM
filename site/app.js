@@ -1,6 +1,6 @@
 /* SIGNAL / INTERCEPT — honeypot console
    Plain vanilla JS. No framework, no chart library.
-   Network: relative fetch of meta.json, live.json, archive.json only. */
+   Network: relative fetch of meta.json, live.json, archive.json, countries-110m.json only. */
 (function () {
   'use strict';
 
@@ -163,7 +163,7 @@
       })
       .catch(function (err) {
         state.lastFetchOk = false; setLiveDot(false);
-        showError('Feed unreachable — ' + (err && err.message ? err.message : 'network error') + '. Retrying every 60s.');
+        showError((err && err.message ? err.message : 'network error') + '. Retrying every 60s.');
         setUpdated(state.lastFetchAt, true);
       });
   }
@@ -195,6 +195,8 @@
       }),
       usernames: (live.top_usernames || []).map(function (x) { return { label: x.username, count: x.count || 0 }; }),
       commands: (live.top_commands || []).map(function (x) { return { label: x.command != null ? x.command : x.input, count: x.count || 0 }; }),
+      downloads: (live.top_downloads || []).map(function (x) { return { label: x.url, count: x.count || 0 }; }),
+      uploads: (live.top_uploads || []).map(function (x) { return { label: x.outfile, count: x.count || 0 }; }),
       recent: live.recent_attacks || [],
       points: live.geo_points || [],
       timeline: (live.timeline || []).map(function (b) { return { t: String(b.t || ''), connections: b.connections || 0, auth: b.auth || 0 }; })
@@ -220,7 +222,7 @@
 
   function archiveView(days) {
     var stats = { connections: 0, auth: 0, ips: 0, commands: 0 };
-    var countries = {}, usernames = {}, commands = {}, geo = {}, ips = {};
+    var countries = {}, usernames = {}, commands = {}, downloads = {}, uploads = {}, geo = {}, ips = {};
     var timeline = [];
     (days || []).forEach(function (d) {
       stats.connections += d.connections || 0;
@@ -230,6 +232,8 @@
       sumMapInto(countries, d.countries);
       sumMapInto(usernames, d.usernames);
       sumMapInto(commands, d.top_commands);
+      sumMapInto(downloads, d.downloads_top);
+      sumMapInto(uploads, d.uploads_top);
       if (d.ips) for (var ip in d.ips) if (Object.prototype.hasOwnProperty.call(d.ips, ip)) {
         var i = d.ips[ip];
         if (!ips[ip]) ips[ip] = { count: 0, country: (i.country || '') };
@@ -240,7 +244,7 @@
         var lon = Math.round(Number(g.lon) * 10) / 10;
         if (!isFinite(lat) || !isFinite(lon)) return;
         var key = lat + ',' + lon;
-        if (!geo[key]) geo[key] = { lat: lat, lon: lon, count: 0 };
+        if (!geo[key]) geo[key] = { lat: lat, lon: lon, count: 0, country: g.country || '' };
         geo[key].count += g.count || 0;
       });
       timeline.push({ t: d.date, connections: d.connections || 0, auth: d.auth || 0 });
@@ -252,6 +256,8 @@
       countries: mapToSortedRows(countries),
       usernames: mapToSortedRows(usernames),
       commands: mapToSortedRows(commands),
+      downloads: mapToSortedRows(downloads),
+      uploads: mapToSortedRows(uploads),
       ips: mapToIpRows(ips), recent: null, points: points, timeline: timeline
     };
   }
@@ -338,14 +344,34 @@
   /* ================= timeline (hand-rolled SVG) ================= */
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
+  function tlHideTip() {
+    var p = $('panelActivity'), t = p && p.querySelector('.tl-tip');
+    if (t) t.classList.remove('on');
+  }
+  function refreshTlHint() {
+    var p = $('panelActivity'), sc = $('tlScroll');
+    if (!p || !sc) return;
+    var scrollable = sc.scrollWidth > sc.clientWidth + 1;
+    p.classList.toggle('scrollable', scrollable);
+    p.classList.toggle('at-end', !scrollable || sc.scrollLeft + sc.clientWidth >= sc.scrollWidth - 1);
+  }
   function renderTimeline(view) {
     var svg = $('tlChart'); if (!svg) return;
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     var modeEl = $('activityMode');
-    if (modeEl) modeEl.textContent = view.mode === 'live' ? 'hourly &middot; connections + auth' : 'daily &middot; connections + auth';
+    if (modeEl) modeEl.textContent = view.mode === 'live' ? 'hourly \u00B7 connections + auth' : 'daily \u00B7 connections + auth';
     var rows = view.timeline || [];
-    var W = 960, H = 200, padL = 42, padR = 8, padT = 14, padB = 26;
+    var H = 200, padL = 42, padR = 8, padT = 14, padB = 26;
+    var MIN_BAND = (window.matchMedia && window.matchMedia('(max-width: 900px)').matches) ? 40 : 26;
+    var scrollEl = $('tlScroll');
+    var availW = scrollEl ? scrollEl.clientWidth : 960;
+    var W = Math.max(availW, rows.length * MIN_BAND + padL + padR);
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svg.style.width = W + 'px';
+    var panel = $('panelActivity');
+    var tip = panel ? panel.querySelector('.tl-tip') : null;
+    if (panel && !tip) { tip = document.createElement('div'); tip.className = 'tl-tip'; panel.appendChild(tip); }
+    if (tip) tip.classList.remove('on');
     function textEl(x, y, str, anchor) {
       var t = document.createElementNS(SVG_NS, 'text');
       t.setAttribute('x', x); t.setAttribute('y', y); t.setAttribute('fill', '#6b7280');
@@ -361,6 +387,7 @@
       base.setAttribute('stroke', '#1e2328'); base.setAttribute('stroke-width', '1'); svg.appendChild(base);
       svg.appendChild(textEl((W + padL) / 2, H / 2, 'AWAITING FIRST INTERCEPT', 'middle'));
       if (startEl) startEl.textContent = ''; if (endEl) endEl.textContent = '';
+      refreshTlHint();
       return;
     }
     var maxV = 1;
@@ -395,17 +422,36 @@
         dot.setAttribute('x', cx - 0.5); dot.setAttribute('width', 1);
         dot.setAttribute('y', baseY - 1); dot.setAttribute('height', 1); dot.setAttribute('fill', '#6b7280'); svg.appendChild(dot);
       }
+      var hit = document.createElementNS(SVG_NS, 'rect');
+      hit.setAttribute('x', padL + band * i); hit.setAttribute('y', padT);
+      hit.setAttribute('width', band); hit.setAttribute('height', innerH);
+      hit.setAttribute('fill', 'transparent'); hit.setAttribute('pointer-events', 'all');
+      function showTip() {
+        if (!tip) return;
+        var sr = svg.getBoundingClientRect(), pr = panel.getBoundingClientRect(), s = sr.width / W;
+        var topY = baseY - Math.max(hC, hA, 2);
+        tip.textContent = xLabel(r.t) + ' \u00B7 conn ' + fmt(r.connections) + ' \u00B7 auth ' + fmt(r.auth);
+        var hw = tip.offsetWidth / 2;
+        var lx = sr.left - pr.left + cx * s;
+        tip.style.left = Math.max(hw, Math.min(lx, pr.width - hw)) + 'px';
+        tip.style.top = (sr.top - pr.top + topY * s - 6) + 'px';
+        tip.classList.add('on');
+      }
+      hit.addEventListener('mouseenter', showTip);
+      hit.addEventListener('mouseleave', tlHideTip);
+      hit.addEventListener('click', function (e) { e.stopPropagation(); showTip(); });
+      svg.appendChild(hit);
     });
     function xLabel(t) { return view.mode === 'live' ? t.slice(11, 16) : t.slice(5); }
     var labelEvery = Math.max(1, Math.ceil(n / 8));
     rows.forEach(function (r, i) {
-      if (i % labelEvery !== 0 && i !== n - 1) return;
+      if (i % labelEvery !== 0) return;
       var cx = padL + band * i + band / 2;
-      var anchor = i === n - 1 ? 'end' : (i === 0 ? 'start' : 'middle');
-      svg.appendChild(textEl(cx, H - 10, xLabel(r.t), anchor));
+      svg.appendChild(textEl(cx, H - 10, xLabel(r.t), 'middle'));
     });
     if (startEl) startEl.textContent = rows[0].t.slice(0, 10);
     if (endEl) endEl.textContent = rows[n - 1].t.slice(0, 10) + (view.mode === 'live' ? ' &middot; UTC' : '');
+    refreshTlHint();
   }
 
   /* ================= console ticker ================= */
@@ -464,7 +510,53 @@
 
   /* ================= globe ================= */
 
-  var world = null, globeOK = false, coordEl = null;
+  var world = null, globeOK = false, coordEl = null, hoverCountry = null, globeVisible = true;
+  function prefersReducedMotion() {
+    return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+  function applyGlobePlayState() {
+    if (!globeOK || !world) return;
+    try { (globeVisible && !document.hidden ? world.resumeAnimation : world.pauseAnimation)(); } catch (e) {}
+  }
+  var hoverLast = 0;
+  function hoverThrottle() {
+    var now = performance.now();
+    if (now - hoverLast < 50) return false;
+    hoverLast = now; return true;
+  }
+  function decodeTopo(topo) {
+    var obj = topo && topo.objects && topo.objects.countries;
+    if (!obj || !topo.transform || !topo.arcs) return [];
+    var arcs = topo.arcs, tr = topo.transform, feats = [];
+    function readArc(i) {
+      var arc = arcs[i], pts = [], x = 0, y = 0;
+      for (var j = 0; j < arc.length; j++) { x += arc[j][0]; y += arc[j][1]; pts.push([x, y]); }
+      return pts;
+    }
+    function ring(seg) {
+      var pts = [];
+      for (var a = 0; a < seg.length; a++) {
+        var arc = seg[a] >= 0 ? readArc(seg[a]) : readArc(~seg[a]).reverse();
+        for (var p = 0; p < arc.length; p++) {
+          pts.push([tr.translate[0] + arc[p][0] * tr.scale[0], tr.translate[1] + arc[p][1] * tr.scale[1]]);
+        }
+      }
+      return pts;
+    }
+    obj.geometries.forEach(function (g) {
+      if (g.type !== 'Polygon' && g.type !== 'MultiPolygon') return;
+      var coords = g.type === 'Polygon' ? g.arcs.map(ring) : g.arcs.map(function (poly) { return poly.map(ring); });
+      feats.push({ type: 'Feature', properties: { name: (g.properties && g.properties.name) || '' }, geometry: { type: g.type, coordinates: coords } });
+    });
+    return feats;
+  }
+  function loadCountries() {
+    if (!globeOK || !world) return;
+    fetchJSON('countries-110m.json').then(function (topo) {
+      var fs = decodeTopo(topo);
+      if (fs.length) world.polygonsData(fs);
+    }).catch(function () {});
+  }
   function makeSolidTexture() {
     var cv = document.createElement('canvas'); cv.width = 8; cv.height = 4;
     var ctx = cv.getContext('2d'); ctx.fillStyle = '#111417'; ctx.fillRect(0, 0, 8, 4);
@@ -480,19 +572,25 @@
         .pointLat('lat').pointLng('lon').pointColor(function () { return '#ff7a18'; })
         .pointAltitude(function (d) { return Math.min(0.55, 0.05 + Math.sqrt(d.count || 1) * 0.025); })
         .pointRadius(function (d) { return 0.42 + Math.min(1.0, Math.sqrt(d.count || 1) * 0.11); })
+        .polygonCapColor(function () { return 'rgba(0,0,0,0)'; })
+        .polygonSideColor(function () { return 'rgba(0,0,0,0)'; })
+        .polygonStrokeColor(function () { return 'rgba(255,122,24,0.3)'; })
+        .polygonAltitude(0.004).polygonsTransitionDuration(0)
+        .onPolygonHover(function (p) { hoverCountry = (p && p.properties && p.properties.name) || null; })
         .pointLabel(function (d) {
-          return '<div class="globe-tip"><span class="gt-label">' + escapeHTML(d.country || countryName(d.code || '') || 'ORIGIN') + '</span>' + escapeHTML(fmt(d.count)) + ' hits</div>';
+          return '<div class="globe-tip"><span class="gt-label">' + escapeHTML(d.country || countryName(d.code || '') || 'ORIGIN') + '</span> ' + escapeHTML(fmt(d.count)) + ' hits</div>';
         });
-      try { world.showGraticules(true).graticuleColor('rgba(64,72,80,0.55)'); } catch (e) {}
+      try { world.showGraticules(false); } catch (e) {}
       try {
         var mat = world.globeMaterial && world.globeMaterial();
         if (mat) { if (mat.color && mat.color.set) mat.color.set('#1a1f24'); if ('map' in mat) mat.map = null; if (mat.shininess !== undefined) mat.shininess = 4; mat.needsUpdate = true; }
       } catch (e1) { try { world.globeImageUrl(makeSolidTexture()); } catch (e2) {} }
+      try { world.renderer().setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5)); } catch (e3) {}
       try {
         var ctrl = world.controls();
-        ctrl.autoRotate = true; ctrl.autoRotateSpeed = 0.55;
+        ctrl.autoRotate = !prefersReducedMotion(); ctrl.autoRotateSpeed = 0.55;
         if ('enableZoom' in ctrl) ctrl.enableZoom = false;
-      } catch (e3) {}
+      } catch (e4) {}
       var wrap = $('globeWrap');
       var resize = function () {
         if (!wrap || !world) return;
@@ -501,17 +599,47 @@
       };
       if (window.ResizeObserver && wrap) { var ro = new ResizeObserver(resize); ro.observe(wrap); }
       window.addEventListener('resize', resize); resize();
+      if (window.IntersectionObserver && wrap) {
+        new IntersectionObserver(function (entries) {
+          globeVisible = entries[0].isIntersecting; applyGlobePlayState();
+        }, { threshold: 0.05 }).observe(wrap);
+      }
+      document.addEventListener('visibilitychange', applyGlobePlayState);
       if (wrap && coordEl) {
+        var GLOBE_R = 100;
+        function rotateQuat(v, q) {
+          var w = 2 * (q.y * v.z - q.z * v.y), x = 2 * (q.z * v.x - q.x * v.z), y = 2 * (q.x * v.y - q.y * v.x);
+          return { x: v.x + q.w * w + (q.y * y - q.z * x), y: v.y + q.w * x + (q.z * w - q.x * y), z: v.z + q.w * y + (q.x * x - q.y * w) };
+        }
         wrap.addEventListener('pointermove', function (ev) {
           var txt = null;
           try {
-            if (world && typeof world.toGeoCoords === 'function') {
+            if (world) {
               var rect = el.getBoundingClientRect();
-              var pt = world.toGeoCoords(ev.clientX - rect.left, ev.clientY - rect.top);
-              if (pt && isFinite(pt.lat) && isFinite(pt.lng)) txt = 'LAT ' + (pt.lat >= 0 ? '+' : '') + pt.lat.toFixed(2) + ' / LON ' + (pt.lng >= 0 ? '+' : '') + pt.lng.toFixed(2);
+              var px = ev.clientX - rect.left, py = ev.clientY - rect.top;
+              if (hoverThrottle()) {
+              if (px >= 0 && py >= 0 && px <= rect.width && py <= rect.height) {
+                var cam = world.camera(), halfH = Math.tan(cam.fov * Math.PI / 360);
+                var ndcX = (px / rect.width) * 2 - 1, ndcY = -((py / rect.height) * 2 - 1);
+                var d = rotateQuat({ x: ndcX * halfH * cam.aspect, y: ndcY * halfH, z: -1 }, cam.quaternion);
+                var len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z); d.x /= len; d.y /= len; d.z /= len;
+                var cx = cam.position.x, cy = cam.position.y, cz = cam.position.z;
+                var b = cx * d.x + cy * d.y + cz * d.z, disc = b * b - (cx * cx + cy * cy + cz * cz - GLOBE_R * GLOBE_R);
+                if (disc >= 0) {
+                  var t = -b - Math.sqrt(disc);
+                  if (t >= 0) {
+                    var pt = world.toGeoCoords({ x: cx + t * d.x, y: cy + t * d.y, z: cz + t * d.z });
+                    if (pt && isFinite(pt.lat) && isFinite(pt.lng)) {
+                      txt = 'LAT ' + (pt.lat >= 0 ? '+' : '') + pt.lat.toFixed(2) + ' / LON ' + (pt.lng >= 0 ? '+' : '') + pt.lng.toFixed(2);
+                      if (hoverCountry) txt += ' \u00b7 ' + hoverCountry;
+                    }
+                  }
+                }
+              }
+              }
             }
           } catch (e5) { txt = null; }
-          coordEl.textContent = txt || 'SOL 33.95N 118.39W — USW2';
+          coordEl.textContent = txt || 'HOVER SPHERE FOR COORDINATES';
           coordEl.classList.toggle('on', !!txt);
         });
         wrap.addEventListener('pointerleave', function () { coordEl.textContent = 'HOVER SPHERE FOR COORDINATES'; coordEl.classList.remove('on'); });
@@ -523,11 +651,14 @@
     globeOK = false; el.textContent = '';
     var d = document.createElement('div'); d.className = 'globe-fallback'; d.textContent = 'globe offline'; el.appendChild(d);
   }
+  var globeSig = '';
   function updateGlobe(points) {
     if (!globeOK || !world) return;
     try {
       world.pointsData(points || []);
-      if (points && points.length) world.pointOfView({ lat: 22, lng: 12, altitude: 2.15 }, 900);
+      var sig = (points || []).length + ':' + (points || []).reduce(function (s, p) { return s + (p.count || 0); }, 0);
+      if (sig !== globeSig && points && points.length) { globeSig = sig; world.pointOfView({ lat: 22, lng: 12, altitude: 2.15 }, 900); }
+      else globeSig = sig;
     } catch (e) {}
   }
 
@@ -548,6 +679,8 @@
     renderLeader($('chartIps'), view.ips, true);
     renderLeader($('chartUsernames'), view.usernames, false);
     renderLeader($('chartCommands'), view.commands, false);
+    renderLeader($('chartDownloads'), view.downloads, false);
+    renderLeader($('chartUploads'), view.uploads, false);
     renderTicker(view.recent);
   }
 
@@ -608,8 +741,16 @@
 
   /* ================= boot ================= */
 
+  function wireTimeline() {
+    var sc = $('tlScroll');
+    if (sc) sc.addEventListener('scroll', function () { tlHideTip(); refreshTlHint(); });
+    var svgEl = $('tlChart');
+    if (svgEl) svgEl.addEventListener('click', tlHideTip);
+    window.addEventListener('resize', function () { if (state.view) renderTimeline(state.view); });
+  }
+
   function boot() {
-    wireControls(); wireReveal(); initGlobe(); clampCustomInputs();
+    wireControls(); wireReveal(); wireTimeline(); initGlobe(); loadCountries(); clampCustomInputs();
     setPreset('all');
     loadData().then(function () { hideError(); renderAll(); });
     setInterval(function () {

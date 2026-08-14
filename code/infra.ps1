@@ -359,6 +359,11 @@ $bpFile = Join-Path $env:TEMP "bucket-policy.json"; Set-Content -Path $bpFile -V
 aws s3api put-bucket-policy --bucket $BucketName --policy "file://$bpFile" | Out-Null
 Ok "Bucket policy applied."
 
+# --- 9. Invalidate CloudFront cache ------------------------------------------
+Info "Invalidating CloudFront cache..."
+$inv = aws cloudfront create-invalidation --distribution-id $DistId --paths "/*" --region $Region | ConvertFrom-Json
+Ok "Invalidation: $($inv.Invalidation.Id)"
+
 # --- Summary ----------------------------------------------------------------
 Write-Host ""
 Write-Host "================ DEPLOY SUMMARY ================" -ForegroundColor Magenta

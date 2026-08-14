@@ -4,8 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<meta name="description" content="Public live dashboard of attacks against a Cowrie SSH honeypot.">
-<title>Signal / Intercept — Honeypot Console</title>
+<meta name="description" content="Public live dossier of attacks against a Cowrie SSH honeypot.">
+<title>Signal / Intercept</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preload" href="fonts/fraunces-latin-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -14,6 +17,7 @@
 
 <header id="topbar">
   <div class="brand">
+    <img class="brand-logo" src="logo.png" alt="Signal/Intercept">
     <span class="brand-title">Signal<span class="dim">/</span>Intercept</span>
   </div>
   <div class="top-right">
@@ -33,8 +37,8 @@
 
   <section id="hero" class="wrap-inner">
     <div class="hero-left">
-      <h1 class="hero-title">Signal<span class="dim">/</span>Intercept</h1>
-      <p class="hero-sub">Gathered honeypot data from attackers</p>
+      <h1 class="hero-title">Signal<span class="dim"><span class="slash">/</span>Intercept</span></h1>
+      <p class="hero-sub">A live record of connections, credentials, and commands, gathered from attackers.</p>
 
       <div id="customBar" class="custom">
         <label for="customStart">From</label>
@@ -72,8 +76,7 @@
         <span class="tick bl" aria-hidden="true"></span>
         <span class="tick br" aria-hidden="true"></span>
         <div class="instrument-head">
-          <span>Origin scope</span>
-          <span>SOL 33.95&deg;N 118.39&deg;W</span>
+          <span>World Map</span>
         </div>
         <div id="globeWrap">
           <div id="globe"></div>
@@ -89,10 +92,16 @@
         <h2 class="panel-title">Activity</h2>
         <span class="panel-note" id="activityMode">daily</span>
       </div>
-      <svg id="tlChart" role="img" aria-label="Activity timeline"></svg>
+      <div class="tl-scroll" id="tlScroll">
+        <svg id="tlChart" role="img" aria-label="Activity timeline"></svg>
+      </div>
       <div class="tl-foot">
         <span id="activityStart"></span>
         <span id="activityEnd"></span>
+        <span class="legend">
+          <span class="lg"><i style="background:#ff7a18"></i>connections</span>
+          <span class="lg"><i style="background:#6b7280"></i>auth</span>
+        </span>
       </div>
     </div>
 
@@ -127,6 +136,23 @@
       <div id="chartCommands" class="leader"></div>
     </div>
 
+    <div class="panel wide reveal" id="panelFiles">
+      <div class="panel-head">
+        <h2 class="panel-title">File transfers</h2>
+        <span class="panel-note">payloads fetched &amp; dropped</span>
+      </div>
+      <div class="files-grid">
+        <div>
+          <div class="col-head">Top download URLs</div>
+          <div id="chartDownloads" class="leader"></div>
+        </div>
+        <div>
+          <div class="col-head">Top uploaded filenames</div>
+          <div id="chartUploads" class="leader"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel wide reveal" id="panelTicker">
       <div class="panel-head">
         <h2 class="panel-title">Recent intercepts</h2>
@@ -138,8 +164,15 @@
 
   <footer>
     <div class="wrap-inner foot-inner">
-      <p class="foot-line">Live feed from a Cowrie SSH honeypot &mdash; attacker data shown uncensored.</p>
-      <p class="foot-line">Updated <span id="updated" role="status" aria-live="polite">&mdash;</span></p>
+      <p class="foot-line">Created by @bintdar.dev</p>
+      <div class="foot-social">
+        <a href="https://linkedin.com/in/bintang-darmawan/" target="_blank" rel="noopener" aria-label="LinkedIn">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.36V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.72v20.55C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.72C24 .77 23.2 0 22.22 0z"/></svg>
+        </a>
+        <a href="https://github.com/darkclode24" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .11-.78.42-1.31.76-1.61-2.66-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0C16.08 4.24 17.1 4.56 17.1 4.56c.65 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.49 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58A12 12 0 0 0 12 .3z"/></svg>
+        </a>
+      </div>
     </div>
   </footer>
 

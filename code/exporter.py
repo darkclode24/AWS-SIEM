@@ -14,6 +14,9 @@ Environment variables:
   DASHBOARD_BUCKET   S3 bucket that stores the JSON      (required)
   GEOIP_ENABLED      "true"/"false" kill-switch for geo  (default true)
   GEOIP_ENDPOINT     ip-api batch endpoint               (default http://ip-api.com/batch)
+
+Invoking with {"backfill": ["2026-07-29", ...]} rebuilds those UTC day
+buckets in archive.json instead of running the normal hourly export.
 """
 
 import json
@@ -155,6 +158,13 @@ def get_json(key):
 # Query strings
 # --------------------------------------------------------------------------
 
+def display_name(field, value):
+    """Uploaded file names land as cowrie storage paths; show the basename."""
+    if field == "outfile" and value:
+        return value.rsplit("/", 1)[-1]
+    return value
+
+
 Q_TOTALS_TIMELINE = """
 filter ispresent(eventid)
 | stats
@@ -180,6 +190,8 @@ Q_TOP_FIELD = {
     "usernames": 'filter ispresent(username) | filter eventid = "cowrie.login.failed" or eventid = "cowrie.login.success" | stats count(*) as count by username | sort count desc | limit 10',
     "passwords": 'filter ispresent(password) | filter eventid = "cowrie.login.failed" or eventid = "cowrie.login.success" | stats count(*) as count by password | sort count desc | limit 10',
     "commands":  'filter eventid = "cowrie.command.input" | filter ispresent(input) | stats count(*) as count by input | sort count desc | limit 15',
+    "downloads": 'filter eventid = "cowrie.session.file_download" | filter ispresent(url) | stats count(*) as count by url | sort count desc | limit 10',
+    "uploads":   'filter eventid = "cowrie.session.file_upload" | filter ispresent(outfile) | stats count(*) as count by outfile | sort count desc | limit 10',
 }
 
 Q_RECENT = """
@@ -203,6 +215,15 @@ filter ispresent(src_ip)
 Q_DAY_FIELD = {
     "usernames": 'filter ispresent(username) | filter eventid = "cowrie.login.failed" or eventid = "cowrie.login.success" | stats count(*) as count by username | sort count desc | limit 10',
     "commands":  'filter eventid = "cowrie.command.input" | filter ispresent(input) | stats count(*) as count by input | sort count desc | limit 10',
+    "downloads": 'filter eventid = "cowrie.session.file_download" | filter ispresent(url) | stats count(*) as count by url | sort count desc | limit 10',
+    "uploads":   'filter eventid = "cowrie.session.file_upload" | filter ispresent(outfile) | stats count(*) as count by outfile | sort count desc | limit 10',
+}
+
+DAY_LIST_FIELDS = {
+    "usernames": ("username", "usernames"),
+    "commands": ("input", "top_commands"),
+    "downloads": ("url", "downloads_top"),
+    "uploads": ("outfile", "uploads_top"),
 }
 
 
@@ -271,7 +292,8 @@ def build_live(now):
     def top_list(key, field):
         rows = run_query(Q_TOP_FIELD[key], start, now)
         return [
-            {field: r.get(field, ""), "count": int(float(r.get("count", 0) or 0))}
+            {field: display_name(field, r.get(field, "")),
+             "count": int(float(r.get("count", 0) or 0))}
             for r in rows if r.get(field)
         ]
 
@@ -300,6 +322,8 @@ def build_live(now):
         "top_usernames": top_list("usernames", "username"),
         "top_passwords": top_list("passwords", "password"),
         "top_commands": top_list("commands", "input"),
+        "top_downloads": top_list("downloads", "url"),
+        "top_uploads": top_list("uploads", "outfile"),
         "recent_attacks": recent,
         "geo_points": geo_points,
         "timeline": timeline,
@@ -310,9 +334,8 @@ def build_live(now):
 # Build today's archive day-bucket and merge into archive.json
 # --------------------------------------------------------------------------
 
-def build_day_bucket(now):
-    start = now - timedelta(hours=LIVE_WINDOW_HOURS)
-    ip_rows = run_query(Q_DAY_COUNTRIES, start, now)
+def build_day_bucket(start, end, label):
+    ip_rows = run_query(Q_DAY_COUNTRIES, start, end)
     ips = [r["src_ip"] for r in ip_rows if r.get("src_ip")]
     geo = geolocate(ips)
 
@@ -330,22 +353,28 @@ def build_day_bucket(now):
             countries[code] = countries.get(code, 0) + cnt
         if g.get("lat") is not None and g.get("lon") is not None:
             key = (round(g["lat"], 1), round(g["lon"], 1))
-            geo_pts[key] = geo_pts.get(key, 0) + cnt
+            pt = geo_pts.get(key)
+            if not pt:
+                pt = geo_pts[key] = {"count": 0, "by_country": {}}
+            pt["count"] += cnt
+            if code:
+                pt["by_country"][code] = pt["by_country"].get(code, 0) + cnt
         ips[ip] = {"count": cnt, "country": code or ""}
 
     # totals for the day from the timeline query
-    timeline_rows = run_query(Q_TOTALS_TIMELINE, start, now)
+    timeline_rows = run_query(Q_TOTALS_TIMELINE, start, end)
     bucket = {
-        "date": now.date().isoformat(),
+        "date": label,
         # scalar daily totals
         "connections": 0, "auth": 0, "unique_ips": 0,
         "commands": 0, "downloads": 0, "uploads": 0,
         # per-day top lists (maps of value -> count)
         "countries": dict(sorted(countries.items(), key=lambda x: -x[1])[:15]),
-        "usernames": {}, "top_commands": {},
+        "usernames": {}, "top_commands": {}, "downloads_top": {}, "uploads_top": {},
         "ips": dict(sorted(ips.items(), key=lambda x: -x[1]["count"])[:25]),
-        "geo": [{"lat": k[0], "lon": k[1], "count": v} for k, v in
-                sorted(geo_pts.items(), key=lambda x: -x[1])[:60]],
+        "geo": [{"lat": k[0], "lon": k[1], "count": v["count"],
+                 "country": max(v["by_country"].items(), key=lambda x: x[1])[0] if v["by_country"] else ""}
+                for k, v in sorted(geo_pts.items(), key=lambda x: -x[1]["count"])[:60]],
     }
     for r in timeline_rows:
         bucket["connections"] += int(float(r.get("connections", 0) or 0))
@@ -355,16 +384,20 @@ def build_day_bucket(now):
         bucket["uploads"] += int(float(r.get("uploads", 0) or 0))
         bucket["unique_ips"] = max(bucket["unique_ips"], int(float(r.get("unique_ips", 0) or 0)))
 
-    for field in ("usernames", "commands"):
-        rows = run_query(Q_DAY_FIELD[field], start, now)
-        key = "username" if field == "usernames" else "input"
-        out_field = "usernames" if field == "usernames" else "top_commands"
+    for field, (key, out_field) in DAY_LIST_FIELDS.items():
+        rows = run_query(Q_DAY_FIELD[field], start, end)
         bucket[out_field] = {
-            r.get(key, ""): int(float(r.get("count", 0) or 0))
+            display_name(key, r.get(key, "")): int(float(r.get("count", 0) or 0))
             for r in rows if r.get(key)
         }
 
     return bucket
+
+
+def build_day_bucket_for_date(date_str):
+    """Rebuild a full day bucket for an arbitrary UTC date (YYYY-MM-DD)."""
+    start = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return build_day_bucket(start, start + timedelta(days=1), date_str)
 
 
 def merge_archive(existing, day_bucket, fallback_first_date):
@@ -378,6 +411,27 @@ def merge_archive(existing, day_bucket, fallback_first_date):
 
 
 # --------------------------------------------------------------------------
+# Backfill: rebuild day buckets for past UTC dates on demand
+# --------------------------------------------------------------------------
+
+def backfill(dates, now):
+    archive = get_json("archive.json")
+    fallback_first = archive.get("first_data_date") if archive else None
+    if not fallback_first:
+        fallback_first = first_data_date() or dates[0]
+    for date_str in dates:
+        day_bucket = build_day_bucket_for_date(date_str)
+        archive = merge_archive(archive, day_bucket, fallback_first)
+    put_json("archive.json", archive)
+    meta = {
+        "first_data_date": archive["first_data_date"],
+        "generated_at": now.isoformat().replace("+00:00", "Z"),
+    }
+    put_json("meta.json", meta)
+    return {"status": "ok", "backfilled": dates, "days": len(archive["days"])}
+
+
+# --------------------------------------------------------------------------
 # Handler
 # --------------------------------------------------------------------------
 
@@ -387,8 +441,11 @@ def lambda_handler(event, context):
 
     now = datetime.now(timezone.utc)
 
+    if isinstance(event, dict) and event.get("backfill"):
+        return backfill(event["backfill"], now)
+
     live = build_live(now)
-    day_bucket = build_day_bucket(now)
+    day_bucket = build_day_bucket(now - timedelta(hours=LIVE_WINDOW_HOURS), now, now.date().isoformat())
 
     existing_archive = get_json("archive.json")
     fallback_first = existing_archive.get("first_data_date") if existing_archive else None
