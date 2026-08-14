@@ -304,7 +304,7 @@ The detector reads the secret at cold start (env var `TELEGRAM_SECRET` holds the
 `env_variable = EXPECTED_REGION` to reject events from other Regions
 `env_variable = CREDENTIAL_QUERY_ARN` to accept only the credential-guessing scheduled query
 
-Lambda code is available [here](code/lambda.py)
+Lambda code is available at [`code/lambda.py`](code/lambda.py)
 
 ### EventBridge
 
@@ -352,8 +352,8 @@ Provisioning is scripted in [`code/infra.ps1`](code/infra.ps1), a powershell scr
 | S3 bucket (dashboard site) | Hosts static dashboard files and JSON exports, Block Public Access enabled |
 | S3 bucket (raw archive) | Versioned private bucket storing every raw Cowrie event |
 | IAM roles | Least-privilege roles for both Lambdas |
-| cowrie-dashboard-exporter Lambda | Packages and deploys code/exporter.py |
-| cowrie-raw-archiver Lambda | Packages and deploys code/raw_archiver.py |
+| cowrie-dashboard-exporter Lambda | Packages and deploys [`code/exporter.py`](code/exporter.py) |
+| cowrie-raw-archiver Lambda | Packages and deploys [`code/raw_archiver.py`](code/raw_archiver.py) |
 | SQS DLQ | Catches failed exporter invocations |
 | EventBridge rule | Invokes the exporter hourly |
 | Subscription filter | Streams raw Cowrie events to the archiver Lambda |
@@ -382,4 +382,4 @@ Project delivers a working SIEM pipeline. Cowrie feeds CloudWatch Logs, a subscr
 
 - Metric alarms were replaced by a subscription filter, since threshold alarms fire late and carry no event detail, while the filter delivers raw events to Lambda in seconds.
 - Overlapping lookback windows re-read events, so DynamoDB TTL dedup is set up to handle this, DLQs keep failed invocations from being dropped.
-- `Cowrie 3.0.0` emulated curl crashed on real attacker traffic when a download server omitted `Content-Length`, manual debugging and fix was required
+- `Cowrie 3.0.0` emulated curl crashed on real attacker traffic when a download server omitted `Content-Length`, manual debugging and fix were required
