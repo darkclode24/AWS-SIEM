@@ -4,6 +4,8 @@
 
 AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch service with Cowrie Honeypot as data source, data and analytics are visualized to a public CloudFront dashboard.
 
+Live dashboard @ [cloudfront.net](https://d35xk6zzbitrov.cloudfront.net/)
+
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
