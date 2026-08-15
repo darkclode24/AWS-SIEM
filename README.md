@@ -4,6 +4,41 @@
 
 AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch service with Cowrie Honeypot as data source, data and analytics are visualized to a public CloudFront dashboard.
 
+## Table of Contents
+
+- [Architecture Overview](#architecture-overview)
+- [Event Flow](#event-flow)
+- [Services](#services)
+- [Preparation](#preparation)
+  - [Cowrie](#cowrie)
+  - [Region](#region)
+  - [Pricing Calculation](#pricing-calculation)
+  - [Budgeting](#budgeting)
+  - [Account](#account)
+- [Network](#network)
+  - [VPC](#vpc)
+  - [Security Group](#security-group)
+- [EC2](#ec2)
+  - [IAM role](#iam-role)
+  - [Installing Cowrie](#installing-cowrie)
+  - [Patch Cowrie curl command](#patch-cowrie-curl-command)
+  - [Filtering Cowrie outbound connections](#filtering-cowrie-outbound-connections)
+- [Detecting the attackers](#detecting-the-attackers)
+  - [CloudWatch Log Group](#cloudwatch-log-group)
+  - [CloudWatch Agent](#cloudwatch-agent)
+  - [Subscription Filter](#subscription-filter)
+  - [Scheduled Query with DLQ](#scheduled-query-with-dlq)
+  - [Amazon DynamoDB](#amazon-dynamodb)
+  - [Telegram](#telegram)
+  - [Lambda](#lambda)
+  - [EventBridge](#eventbridge)
+- [Public Dashboard](#public-dashboard)
+  - [How it works](#how-it-works)
+  - [Infrastructure](#infrastructure)
+- [Results](#results)
+- [Conclusion](#conclusion)
+  - [Lessons Learned](#lessons-learned)
+
 ## Architecture Overview
 
 <p align="center">
