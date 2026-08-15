@@ -139,8 +139,7 @@
 
   var state = {
     preset: 'all', customStart: null, customEnd: null, firstDate: null,
-    live: null, archive: null, view: null, tickerSeen: [], lastFetchOk: null,
-    lastFetchAt: null
+    live: null, archive: null, view: null, tickerSeen: [], lastFetchOk: null
   };
 
   /* ================= fetch ================= */
@@ -158,25 +157,15 @@
         state.firstDate = res[0].first_data_date || (res[2] && res[2].first_data_date) || null;
         state.live = res[1] || null;
         state.archive = res[2] || null;
-        state.lastFetchOk = true; state.lastFetchAt = new Date();
-        setLiveDot(true); setUpdated(state.lastFetchAt, false); clampCustomInputs();
+        state.lastFetchOk = true;
+        clampCustomInputs();
       })
       .catch(function (err) {
-        state.lastFetchOk = false; setLiveDot(false);
+        state.lastFetchOk = false;
         showError((err && err.message ? err.message : 'network error') + '. Retrying every 60s.');
-        setUpdated(state.lastFetchAt, true);
       });
   }
 
-  function setLiveDot(ok) {
-    var d = $('liveDot'); if (d) d.classList.toggle('err', !ok);
-  }
-  function setUpdated(when, stale) {
-    var el = $('updated'); if (!el) return;
-    if (!when) { el.textContent = '—'; return; }
-    el.textContent = when.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    el.classList.toggle('stale', !!stale);
-  }
   function showError(msg) { var b = $('errBanner'); if (!b) return; b.textContent = msg; b.classList.add('show'); }
   function hideError() { var b = $('errBanner'); if (b) b.classList.remove('show'); }
 
@@ -662,19 +651,13 @@
     } catch (e) {}
   }
 
-  /* ================= sources (globe | list) ================= */
-
-  function renderSources(view) {
-    renderLeader($('chartCountries'), view.countries, true);
-  }
-
   /* ================= render orchestration ================= */
 
   function renderAll() {
     var view = computeView(); state.view = view;
     renderStats(view.stats);
     renderTimeline(view);
-    renderSources(view);
+    renderLeader($('chartCountries'), view.countries, true);
     updateGlobe(view.points);
     renderLeader($('chartIps'), view.ips, true);
     renderLeader($('chartUsernames'), view.usernames, false);
@@ -709,9 +692,27 @@
     if (e.value < min) e.value = min; if (e.value > max) e.value = max;
   }
   function wireControls() {
+    var fab = $('rangeFab'), dot = $('fabDot');
+    function openFab() { if (!fab) return; fab.classList.add('open'); if (dot) dot.setAttribute('aria-expanded', 'true'); }
+    function closeFab() { if (!fab) return; fab.classList.remove('open'); if (dot) dot.setAttribute('aria-expanded', 'false'); }
+    if (fab) {
+      fab.addEventListener('mouseenter', openFab);
+      fab.addEventListener('mouseleave', closeFab);
+    }
+    if (dot) dot.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (fab && fab.classList.contains('open')) closeFab(); else openFab();
+    });
+    document.addEventListener('click', function (e) {
+      if (fab && !fab.contains(e.target)) closeFab();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') closeFab();
+    });
+
     var btns = document.querySelectorAll('.r-btn');
     for (var i = 0; i < btns.length; i++) {
-      (function (b) { b.addEventListener('click', function () { setPreset(b.getAttribute('data-preset')); }); })(btns[i]);
+      (function (b) { b.addEventListener('click', function () { setPreset(b.getAttribute('data-preset')); closeFab(); }); })(btns[i]);
     }
     var apply = $('customApply');
     if (apply) apply.addEventListener('click', function () {
@@ -725,18 +726,34 @@
     });
   }
 
-  /* ================= reveal on scroll ================= */
+  /* ============ hero sweep — align keyframes to real glyph advances ============ */
 
-  function wireReveal() {
-    var els = document.querySelectorAll('.reveal');
-    if (!('IntersectionObserver' in window)) {
-      for (var i = 0; i < els.length; i++) els[i].classList.add('in-view'); return;
+  function tuneHeroSweep() {
+    var el = document.querySelector('.sel-fx');
+    if (!el || !el.firstChild || el.firstChild.nodeType !== 3) return;
+    var t = el.firstChild;
+    var total = el.getBoundingClientRect().width;
+    if (!total) return;
+    var r = document.createRange(), stops = [];
+    for (var i = 1; i <= t.length; i++) {
+      r.setStart(t, 0); r.setEnd(t, i);
+      stops.push(r.getBoundingClientRect().width / total * 100);
     }
-    for (var j = 0; j < els.length; j++) els[j].style.setProperty('--d', (Math.min(j, 8) * 70) + 'ms');
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (en) { if (en.isIntersecting) { en.target.classList.add('in-view'); io.unobserve(en.target); } });
-    }, { threshold: 0.12 });
-    for (var k = 0; k < els.length; k++) io.observe(els[k]);
+    var STEP = 400, HOLD = 1600, REST = 4000;
+    var n = stops.length, expMs = n * STEP;
+    var cycle = expMs + HOLD + expMs + REST;
+    var EXP = expMs / cycle * 100, HEND = (expMs + HOLD) / cycle * 100, SEND = (expMs * 2 + HOLD) / cycle * 100;
+    el.style.setProperty('--sweep-dur', cycle + 'ms');
+    var s = '@keyframes sel-sweep{0%{width:0;animation-timing-function:step-end}';
+    for (var k = 0; k < n; k++)
+      s += ((k + 1) / n * EXP).toFixed(2) + '%{width:' + (k === n - 1 ? 100 : stops[k]).toFixed(2) + '%;animation-timing-function:step-end}';
+    s += HEND + '%{width:100%;animation-timing-function:step-end}';
+    for (var j = 1; j < n; j++)
+      s += (HEND + j / n * (SEND - HEND)).toFixed(2) + '%{width:' + stops[n - 1 - j].toFixed(2) + '%;animation-timing-function:step-end}';
+    s += SEND + '%{width:0}100%{width:0}}';
+    var tag = document.createElement('style');
+    tag.textContent = s;
+    document.head.appendChild(tag);
   }
 
   /* ================= boot ================= */
@@ -746,13 +763,20 @@
     if (sc) sc.addEventListener('scroll', function () { tlHideTip(); refreshTlHint(); });
     var svgEl = $('tlChart');
     if (svgEl) svgEl.addEventListener('click', tlHideTip);
-    window.addEventListener('resize', function () { if (state.view) renderTimeline(state.view); });
+    var resizePending = false;
+    window.addEventListener('resize', function () {
+      if (resizePending || !state.view) return;
+      resizePending = true;
+      requestAnimationFrame(function () { resizePending = false; renderTimeline(state.view); });
+    });
   }
 
   function boot() {
-    wireControls(); wireReveal(); wireTimeline(); initGlobe(); loadCountries(); clampCustomInputs();
+    wireControls(); wireTimeline(); initGlobe(); clampCustomInputs();
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(tuneHeroSweep);
+    else tuneHeroSweep();
     setPreset('all');
-    loadData().then(function () { hideError(); renderAll(); });
+    loadData().then(function () { hideError(); renderAll(); loadCountries(); });
     setInterval(function () {
       loadData().then(function () { if (state.lastFetchOk) { hideError(); renderAll(); } });
     }, REFRESH_MS);

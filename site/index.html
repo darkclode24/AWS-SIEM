@@ -10,6 +10,8 @@
 <link rel="preload" href="fonts/fraunces-latin-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/plex-mono-400.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="styles.css">
+<script defer src="globe.gl.min.js"></script>
+<script defer src="app.js"></script>
 </head>
 <body>
 
@@ -18,15 +20,22 @@
 <header id="topbar">
   <div class="brand">
     <img class="brand-logo" src="logo.png" alt="Signal/Intercept">
-    <span class="brand-title">Signal<span class="dim">/</span>Intercept</span>
   </div>
   <div class="top-right">
-    <div class="range" role="group" aria-label="Time range">
-      <button type="button" class="r-btn active" data-preset="all">All</button>
-      <button type="button" class="r-btn" data-preset="30d">30d</button>
-      <button type="button" class="r-btn" data-preset="7d">7d</button>
-      <button type="button" class="r-btn" data-preset="24h">24h</button>
-      <button type="button" class="r-btn" data-preset="custom">Cust</button>
+    <div class="range-fab" id="rangeFab">
+      <button type="button" class="fab-dot" id="fabDot" aria-haspopup="true" aria-expanded="false" aria-label="Time range"></button>
+      <span class="fab-tip" aria-hidden="true">Timeline</span>
+      <div class="fab-options" role="group" aria-label="Time range">
+        <svg class="fab-clock" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5"/>
+          <path d="M12 7v5l3.5 2" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <button type="button" class="r-btn active" data-preset="all">All</button>
+        <button type="button" class="r-btn" data-preset="30d">30d</button>
+        <button type="button" class="r-btn" data-preset="7d">7d</button>
+        <button type="button" class="r-btn" data-preset="24h">24h</button>
+        <button type="button" class="r-btn" data-preset="custom">Cust</button>
+      </div>
     </div>
   </div>
 </header>
@@ -35,9 +44,9 @@
 
   <div id="errBanner" role="alert"></div>
 
-  <section id="hero" class="wrap-inner">
+  <section id="hero">
     <div class="hero-left">
-      <h1 class="hero-title">Signal<span class="dim"><span class="slash">/</span>Intercept</span></h1>
+      <h1 class="hero-title" aria-label="Signal/Intercept"><span class="sel-fx" data-text="Signal">Signal</span><span class="dim"><span class="slash">/</span>Intercept</span></h1>
       <p class="hero-sub">A live record of connections, credentials, and commands, gathered from attackers.</p>
 
       <div id="customBar" class="custom">
@@ -86,8 +95,8 @@
     </div>
   </section>
 
-  <section id="data" class="wrap-inner">
-    <div class="panel wide reveal" id="panelActivity">
+  <section id="data">
+    <div class="panel wide" id="panelActivity">
       <div class="panel-head">
         <h2 class="panel-title">Activity</h2>
         <span class="panel-note" id="activityMode">daily</span>
@@ -105,14 +114,14 @@
       </div>
     </div>
 
-    <div class="panel reveal" id="panelSources">
+    <div class="panel" id="panelSources">
       <div class="panel-head">
         <h2 class="panel-title">Attack sources</h2>
       </div>
       <div id="chartCountries" class="leader"></div>
     </div>
 
-    <div class="panel reveal" id="panelIps">
+    <div class="panel" id="panelIps">
       <div class="panel-head">
         <h2 class="panel-title">Top attacker IPs</h2>
         <span class="panel-note">by connection</span>
@@ -120,7 +129,7 @@
       <div id="chartIps" class="leader"></div>
     </div>
 
-    <div class="panel reveal" id="panelUsernames">
+    <div class="panel" id="panelUsernames">
       <div class="panel-head">
         <h2 class="panel-title">Top usernames</h2>
         <span class="panel-note">auth attempts</span>
@@ -128,7 +137,7 @@
       <div id="chartUsernames" class="leader"></div>
     </div>
 
-    <div class="panel reveal" id="panelCommands">
+    <div class="panel" id="panelCommands">
       <div class="panel-head">
         <h2 class="panel-title">Top commands</h2>
         <span class="panel-note">post-auth shell</span>
@@ -136,7 +145,7 @@
       <div id="chartCommands" class="leader"></div>
     </div>
 
-    <div class="panel wide reveal" id="panelFiles">
+    <div class="panel wide" id="panelFiles">
       <div class="panel-head">
         <h2 class="panel-title">File transfers</h2>
         <span class="panel-note">payloads fetched &amp; dropped</span>
@@ -153,7 +162,7 @@
       </div>
     </div>
 
-    <div class="panel wide reveal" id="panelTicker">
+    <div class="panel wide" id="panelTicker">
       <div class="panel-head">
         <h2 class="panel-title">Recent intercepts</h2>
         <span class="panel-note" id="tickerNote">raw event stream&nbsp;&middot;&nbsp;24h only</span>
@@ -163,7 +172,7 @@
   </section>
 
   <footer>
-    <div class="wrap-inner foot-inner">
+    <div class="foot-inner">
       <p class="foot-line">Created by @bintdar.dev</p>
       <div class="foot-social">
         <a href="https://linkedin.com/in/bintang-darmawan/" target="_blank" rel="noopener" aria-label="LinkedIn">
@@ -178,7 +187,5 @@
 
 </main>
 
-<script src="globe.gl.min.js"></script>
-<script src="app.js"></script>
 </body>
 </html>
