@@ -328,6 +328,8 @@ Bot is created through `@BotFather` which issues the bot token, and private chat
 
 The detector reads the secret at cold start (env var `TELEGRAM_SECRET` holds the secret ID) and sends alerts with `sendMessage`.
 
+![Telegram Alert](images/telegram.png)
+
 ### Lambda
 
 `cowrie-detector` function is created using configuration as below:
