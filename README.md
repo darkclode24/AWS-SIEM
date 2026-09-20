@@ -63,11 +63,7 @@ The public dashboard shows attacker coordinates on a 3D globe along with top tar
 
 <p align="center">
 
-  <a href="https://d35xk6zzbitrov.cloudfront.net/">
-
     <img src="images/public-dash.png" alt="Public Dashboard" width="90%">
-
-  </a>
 
 </p>
 
@@ -127,18 +123,6 @@ Detailed installation steps, configuration files, and troubleshooting notes are 
 
 ### [Read the Full Technical Writeup (WRITEUP.md)](./WRITEUP.md)
 
-What is covered in the writeup:
-
-- AWS pricing breakdown ($14.06/month) and budget alert setup
-- VPC network topology, subnets, and security group rules
-- Cowrie service configuration and systemd capability binding
-- Root-cause analysis and code fix for the Cowrie curl bug
-- Complete `nftables` egress filtering script
-- CloudWatch subscription filter patterns and Logs Insights query syntax
-- DynamoDB TTL deduplication table structure and query overlap handling
-- Dashboard export design and PowerShell deployment script
-- Lessons learned from operating a public sensor
-
 ---
 
 ## Repository Structure
@@ -164,16 +148,4 @@ What is covered in the writeup:
     ├── styles.css          # UI styles
     └── globe.gl.min.js     # 3D Globe visualization library
 ```
-
----
-
-## Author
-
-**Bintang Darmawan**  
-Computer Engineering | Cloud &amp; Cybersecurity Enthusiast  
-Palembang, South Sumatra, Indonesia
-
-- **LinkedIn**: [linkedin.com/in/bintang-darmawan](https://linkedin.com/in/bintang-darmawan)
-- **GitHub**: [github.com/darkclode24](https://github.com/darkclode24)
-- **Email**: [bintdar.dev@gmail.com](mailto:bintdar.dev@gmail.com)
 
