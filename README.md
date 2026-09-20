@@ -1,49 +1,33 @@
-# Signal / Intercept: AWS Serverless SIEM &amp; Threat Intelligence Honeypot
+# Signal / Intercept: AWS CloudWatch-Based SIEM &amp; Honeypot
 
 ![Cover](images/cover.png)
 
 ![Live Dashboard](https://img.shields.io/badge/Live_Dashboard-CloudFront-blue?style=flat&logo=amazon-aws)
 ![Technical Writeup](https://img.shields.io/badge/Technical_Writeup-WRITEUP.md-success?style=flat&logo=markdown)
-![AWS](https://img.shields.io/badge/Cloud-AWS_ap--southeast--3-orange?style=flat&logo=amazon-aws)
-![Python](https://img.shields.io/badge/Python-3.14-blue?style=flat&logo=python)
-![Monthly Cost](https://img.shields.io/badge/Operating_Cost-~$14/mo-green?style=flat)
+![AWS](https://img.shields.io/badge/AWS-ap--southeast--3-orange?style=flat&logo=amazon-aws)
+![Monthly Cost](https://img.shields.io/badge/Estimated_Cost-~$14/mo-green?style=flat)
 
-Signal / Intercept is an end-to-end, cloud-native Security Information and Event Management (SIEM) pipeline and threat intelligence sensor built entirely on AWS. 
+Signal / Intercept is a cloud-based SIEM and threat monitoring lab built on AWS. It uses an EC2 instance running a Cowrie honeypot as an SSH telemetry source, streams events into Amazon CloudWatch Logs, processes detections with AWS Lambda, sends real-time alerts to Telegram, and visualizes attacker activity on a public CloudFront dashboard.
 
-It captures live internet attacks using a hardened Cowrie honeypot, detects intrusions in real time via Amazon CloudWatch Logs and AWS Lambda, sends sub-3-second alerts to Telegram, and visualizes global attack telemetry through an interactive 3D WebGL dashboard on Amazon CloudFront.
+The project runs for approximately **$14.06 USD per month** in the Jakarta region (`ap-southeast-3`), with the EC2 instance and its public IPv4 address accounting for nearly all of the cost. Alerting and data export tasks run on serverless services that fit comfortably within the AWS Free Tier.
 
-The entire production setup operates at **\~$14.06 USD per month** by combining a lightweight sensor with a 100% serverless detection and reporting architecture.
-
-> **Looking for the in-depth implementation details?**  
-> For the complete step-by-step deployment guide, firewall rules, CloudWatch Insights query syntax, and upstream bug patch, read the [Technical Writeup (WRITEUP.md)](./WRITEUP.md).
+> **Need the full implementation details?**  
+> All configuration files, firewall rules, CloudWatch Insights query syntax, and code patches are documented in the [Technical Writeup (WRITEUP.md)](./WRITEUP.md).
 
 ---
 
-## Quick Links
+## Overview &amp; Highlights
 
-- [Live Attack Dashboard](https://d35xk6zzbitrov.cloudfront.net/)
-- [Full Technical Writeup](./WRITEUP.md)
-- [Architecture &amp; Event Pipeline](#architecture--event-pipeline)
-- [Key Engineering Highlights](#key-engineering-highlights)
-- [Real-World Attack Telemetry](#real-world-attack-telemetry)
-- [Visual Showcase](#visual-showcase)
-- [Technology Stack](#technology-stack)
-- [Repository Structure](#repository-structure)
+- **Near Real-Time Alerts via Subscription Filters**: Instead of waiting on metric alarm evaluation cycles, a CloudWatch Logs subscription filter sends high-confidence events (successful logins, file uploads, payload downloads) directly to Lambda. Alerts reach Telegram within seconds.
+- **Privilege Separation on EC2**: Cowrie runs under an unprivileged user account. Using systemd's `CAP_NET_BIND_SERVICE`, the daemon binds port 22 directly without requiring root permissions. Host SSH is disabled in favor of AWS Systems Manager (SSM) Session Manager.
+- **Egress Filtering with nftables**: Outbound traffic from the honeypot user is strictly limited. It allows HTTP/HTTPS downloads (to capture payloads) and local/VPC DNS lookups, while explicitly blocking access to the AWS Instance Metadata Service (`169.254.169.254`), private RFC1918 subnets, and non-HTTP ports.
+- **Upstream Bug Fix**: Identified and patched an unhandled `TypeError` in Cowrie 3.0.0's emulated `curl` command. When servers returned responses without a `Content-Length` header, Cowrie compared an internal string sentinel against an integer, silently dropping file downloads. The fix keeps payload capture working against live servers.
+- **Burst Deduplication with DynamoDB TTL**: CloudWatch Logs Insights scheduled queries run every 5 minutes with a 20-minute lookback window to catch credential-guessing bursts without missing delayed events. Lambda uses DynamoDB with a 25-minute TTL to suppress duplicate alerts for the same attacker IP across overlapping windows.
+- **Static Public Dashboard**: An hourly Lambda function queries the last 24 hours of logs, geolocates source IPs, and generates static JSON feeds to S3. Amazon CloudFront serves the frontend and an interactive WebGL globe with Origin Access Control (OAC), keeping query costs flat regardless of traffic.
 
 ---
 
-## Key Highlights
-
-- **Sub-3-Second Threat Alerting**: Replaced slow metric alarms with a CloudWatch Logs subscription filter that streams high-confidence events directly to AWS Lambda, delivering formatted Telegram alerts within 3 seconds of an attack.
-- **Honeypot Isolation &amp; Kernel Containment**: The Cowrie sensor runs as an unprivileged user using Linux capabilities (`CAP_NET_BIND_SERVICE`) to bind port 22 directly. Host SSH is completely disabled in favor of AWS Systems Manager (SSM) Session Manager.
-- **Egress Firewall with nftables**: Strict host-level egress rules allow payload downloads over HTTP and HTTPS while strictly blocking access to the AWS Instance Metadata Service (`169.254.169.254`), private RFC1918 subnets, and IPv6 routes. This prevents SSRF, credential theft, and botnet abuse.
-- **Upstream Open-Source Bug Patch**: Diagnosed and resolved a silent crash in Cowrie 3.0.0's emulated `curl` command where servers omitting `Content-Length` triggered a `TypeError` on string sentinels, restoring automated malware capture.
-- **Cost-Optimized Serverless Analytics**: A decoupled event architecture handles aggregate detections via EventBridge scheduled queries with a 20-minute lookback window, using Amazon DynamoDB TTL deduplication to prevent duplicate alerts.
-- **Interactive 3D Threat Map**: An automated hourly pipeline aggregates logs into flat-cost daily buckets and serves an interactive WebGL globe via S3 and CloudFront with Origin Access Control (OAC).
-
----
-
-## Architecture &amp; Event Pipeline
+## Architecture &amp; Data Flow
 
 <p align="center">
 
@@ -51,31 +35,31 @@ The entire production setup operates at **\~$14.06 USD per month** by combining 
 
 </p>
 
-The system operates across four main pipeline stages:
+The telemetry pipeline operates across four stages:
 
-**Ingress &amp; Sensor**
+**Sensor Ingress**
 
-Attackers connect to the exposed Cowrie honeypot over TCP port 22. Cowrie emulates an authentic UNIX shell and logs auth attempts, terminal sessions, and file transfers as structured JSON.
+Attackers connect to Cowrie on port 22. The honeypot simulates a UNIX shell, logging authentication attempts, interactive sessions, and file transfers as structured JSON.
 
-**Ingestion &amp; Detection**
+**Log Collection**
 
-The CloudWatch Agent ships logs to `/honeypot/cowrie`. High-severity events (accepted logins, file uploads, payload drops) stream immediately to Lambda via a Subscription Filter.
+The CloudWatch Agent writes the local JSON log to `/honeypot/cowrie`. High-confidence events stream immediately to the detector Lambda via a Subscription Filter.
 
-**Correlation &amp; Deduplication**
+**Burst Detection &amp; Deduplication**
 
-Scheduled CloudWatch Logs Insights queries run every 5 minutes over a 20-minute lookback window to catch credential-guessing bursts. The detector Lambda validates records against DynamoDB TTL keys to prevent repeat alert fatigue.
+Scheduled CloudWatch Logs Insights queries run every 5 minutes to identify credential-guessing bursts (5 or more attempts per IP). When EventBridge signals query completion, Lambda checks DynamoDB to suppress repeated alerts for known attackers.
 
-**Alerting &amp; Visualization**
+**Alerting &amp; Web Export**
 
-High-severity detections trigger Telegram notifications enriched with GeoIP flags. An hourly Lambda aggregates threat data into static JSON feeds served by Amazon CloudFront.
+Qualified events are sent to Telegram with source country flags and event context. Separately, an hourly export Lambda generates static JSON documents for the public dashboard.
 
 ---
 
 ## Visual Showcase
 
-### Interactive Threat Dashboard
+### Live Threat Dashboard
 
-The public-facing dashboard displays live geographic coordinates, top targeted usernames, captured passwords, shell commands, and malware transfer logs.
+The public dashboard shows attacker coordinates on a 3D globe along with top targeted usernames, passwords, shell commands, and captured downloads.
 
 <p align="center">
 
@@ -87,61 +71,73 @@ The public-facing dashboard displays live geographic coordinates, top targeted u
 
 </p>
 
-### Real-Time Telegram Threat Alerts
+### Telegram Notifications
 
-Alerts arrive in under 3 seconds and contain full contextual telemetry: detection type, source IP, country flag, credentials, shell commands, and file hashes.
+Alerts include detection type, attacker IP, country flag, credentials, shell commands, and file metadata.
 
 <p align="center">
 
-  <img src="images/telegram.png" alt="Telegram Alert" width="65%">
+  <img src="images/telegram.png" alt="Telegram Alert" width="60%">
 
 </p>
 
 ---
 
-## Real-World Attack Telemetry
+## Attack Telemetry (Initial 15-Day Sample)
 
-Data gathered over an initial 15-day live deployment window (July 29 to August 12, 2026):
+The table below summarizes activity captured during an initial 15-day observation window (July 29 to August 12, 2026):
 
 
-| Metric                                | Captured Count         |
-| :------------------------------------- | :---------------------- |
-| **Total Inbound Connections**         | 2,123                  |
-| **Brute-Force SSH Auth Attempts**     | 1,193                  |
-| **Unique Attacker Source IPs**        | 293                    |
-| **Simulated Shell Commands Recorded** | 276                    |
-| **Malicious Payload Downloads**       | 8                      |
-| **Malicious File Uploads**            | 9                      |
-| **Alert Delivery Latency**            | &lt; 3 seconds         |
-| **False Positive Rate**               | 0% (Honeypot baseline) |
+| Metric                          | Count |
+| :------------------------------- | :----- |
+| **Total Inbound Connections**   | 2,123 |
+| **SSH Authentication Attempts** | 1,193 |
+| **Unique Attacker Source IPs**  | 293   |
+| **Shell Commands Entered**      | 276   |
+| **Payload Downloads Captured**  | 8     |
+| **File Uploads Captured**       | 9     |
+
+
+All 17 file-transfer and payload events generated immediate Telegram alerts with the associated source IP and payload details.
+
+---
+
+## Technologies Used
+
+
+| Category                     | Tools &amp; Services                                                           |
+| :---------------------------- | :------------------------------------------------------------------------------ |
+| **Cloud Provider**           | Amazon Web Services (AWS) in Jakarta (`ap-southeast-3`)                        |
+| **Compute &amp; Sensor**     | Amazon EC2, Cowrie Honeypot, Python                                            |
+| **Host Security**            | Ubuntu Linux, `nftables`, Linux Capabilities (`CAP_NET_BIND_SERVICE`), AWS SSM |
+| **Logging &amp; Queries**    | Amazon CloudWatch Logs, CloudWatch Agent, Logs Insights                        |
+| **Serverless Logic**         | AWS Lambda, Amazon EventBridge, Amazon SQS (Dead-Letter Queue)                 |
+| **State &amp; Secrets**      | Amazon DynamoDB (On-Demand with TTL), AWS Secrets Manager                      |
+| **Alerts &amp; Geolocation** | Telegram Bot API, `ip-api.com`                                                 |
+| **Storage &amp; CDN**        | Amazon S3, Amazon CloudFront (Origin Access Control)                           |
+| **Frontend**                 | Globe.gl (Three.js / WebGL), HTML5, JavaScript, CSS3                           |
+| **Deployment**               | PowerShell automation (`code/infra.ps1`), AWS CLI                              |
 
 
 ---
 
-## Technology Stack
+## Technical Writeup
 
-
-| Layer                                  | Technologies &amp; Services                                                    |
-| :-------------------------------------- | :------------------------------------------------------------------------------ |
-| **Cloud Provider**                     | Amazon Web Services (AWS) - Jakarta Region (`ap-southeast-3`)                  |
-| **Sensor &amp; Compute**               | Amazon EC2 (`t3.nano` / `t3.micro`), Cowrie Honeypot, Python 3.14              |
-| **Operating System &amp; Security**    | Ubuntu Linux, `nftables`, Linux Capabilities (`CAP_NET_BIND_SERVICE`), AWS SSM |
-| **Log Management &amp; Querying**      | Amazon CloudWatch Logs, CloudWatch Agent, Logs Insights                        |
-| **Serverless Detection &amp; Routing** | AWS Lambda, Amazon EventBridge, Amazon SQS (Dead-Letter Queue)                 |
-| **State &amp; Secret Management**      | Amazon DynamoDB (On-Demand with TTL), AWS Secrets Manager                      |
-| **Notification Channel**               | Telegram Bot API, `ip-api.com` (GeoIP resolution)                              |
-| **Storage &amp; Edge Delivery**        | Amazon S3 (Raw archive &amp; web hosting), Amazon CloudFront (OAC)             |
-| **Frontend Visualization**             | Globe.gl (Three.js / WebGL), HTML5, Vanilla JavaScript, CSS3                   |
-| **Automation**                         | PowerShell (`code/infra.ps1`), AWS CLI                                         |
-
-
----
-
-## Writeup
-
-All step-by-step configurations, firewall rules, code samples, and lessons learned have been organized into the dedicated technical writeup:
+Detailed installation steps, configuration files, and troubleshooting notes are documented in:
 
 ### [Read the Full Technical Writeup (WRITEUP.md)](./WRITEUP.md)
+
+What is covered in the writeup:
+
+- AWS pricing breakdown ($14.06/month) and budget alert setup
+- VPC network topology, subnets, and security group rules
+- Cowrie service configuration and systemd capability binding
+- Root-cause analysis and code fix for the Cowrie curl bug
+- Complete `nftables` egress filtering script
+- CloudWatch subscription filter patterns and Logs Insights query syntax
+- DynamoDB TTL deduplication table structure and query overlap handling
+- Dashboard export design and PowerShell deployment script
+- Lessons learned from operating a public sensor
 
 ---
 
@@ -149,19 +145,19 @@ All step-by-step configurations, firewall rules, code samples, and lessons learn
 
 ```
 .
-├── README.md               # Portfolio cover page and project summary
-├── WRITEUP.md              # Complete technical writeup and implementation guide
+├── README.md               # Project overview and portfolio summary
+├── WRITEUP.md              # Technical writeup and implementation details
 ├── images/                 # Architecture diagrams, dashboards, and alert screenshots
 │   ├── arch-new.png        # System architecture diagram
 │   ├── cover.png           # Repository cover banner
 │   ├── public-dash.png     # WebGL 3D threat map screenshot
 │   ├── telegram.png        # Telegram notification example
 │   └── ...                 # Additional configuration and terminal screenshots
-├── code/                   # Production backend scripts and automation
-│   ├── lambda.py           # Detector Lambda (Subscription filter, EventBridge, Telegram)
-│   ├── exporter.py         # Hourly threat intelligence aggregator and S3 publisher
-│   ├── raw_archiver.py     # Real-time raw log stream archiver
-│   └── infra.ps1           # Infrastructure-as-code deployment script
+├── code/                   # Production scripts and backend handlers
+│   ├── lambda.py           # Detector Lambda (subscription filter & scheduled query handler)
+│   ├── exporter.py         # Hourly threat data aggregator and S3 publisher
+│   ├── raw_archiver.py     # Raw log stream archiver
+│   └── infra.ps1           # Infrastructure deployment script
 └── site/                   # Static dashboard frontend
     ├── index.html          # Dashboard markup
     ├── app.js              # Application logic and CloudFront data consumer
@@ -170,4 +166,14 @@ All step-by-step configurations, firewall rules, code samples, and lessons learn
 ```
 
 ---
+
+## Author
+
+**Bintang Darmawan**  
+Computer Engineering | Cloud &amp; Cybersecurity Enthusiast  
+Palembang, South Sumatra, Indonesia
+
+- **LinkedIn**: [linkedin.com/in/bintang-darmawan](https://linkedin.com/in/bintang-darmawan)
+- **GitHub**: [github.com/darkclode24](https://github.com/darkclode24)
+- **Email**: [bintdar.dev@gmail.com](mailto:bintdar.dev@gmail.com)
 

@@ -46,7 +46,7 @@
 
 ## Architecture Overview
 
-The system captures, analyzes, alerts, and visualizes live cyber attacks using a completely serverless detection pipeline backed by a hardened honeypot sensor on AWS.
+The system captures, analyzes, alerts, and visualizes live cyber attack activity using a cloud-native detection pipeline backed by a Cowrie honeypot sensor on AWS.
 
 <p align="center">
   <img src="images/arch-new.png" alt="Architecture Overview" width="85%">
@@ -459,7 +459,7 @@ The following statistics were recorded across the initial 15-day sensor observat
 | **Malicious Payload Downloads** | 8 |
 | **Malicious File Uploads** | 9 |
 
-All 17 file-transfer and payload events triggered sub-3-second Telegram notifications, and zero false positives were observed from the honeypot environment.
+All 17 file-transfer and payload events generated immediate Telegram alerts with the corresponding source IP, country flag, and captured file metadata.
 
 ---
 
