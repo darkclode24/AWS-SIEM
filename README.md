@@ -18,21 +18,16 @@ The project runs for approximately **$14.06 USD per month** in the Jakarta regio
 
 ## Overview &amp; Highlights
 
-- **Near Real-Time Alerts via Subscription Filters**: Instead of waiting on metric alarm evaluation cycles, a CloudWatch Logs subscription filter sends high-confidence events (successful logins, file uploads, payload downloads) directly to Lambda. Alerts reach Telegram within seconds.
-- **Privilege Separation on EC2**: Cowrie runs under an unprivileged user account. Using systemd's `CAP_NET_BIND_SERVICE`, the daemon binds port 22 directly without requiring root permissions. Host SSH is disabled in favor of AWS Systems Manager (SSM) Session Manager.
-- **Egress Filtering with nftables**: Outbound traffic from the honeypot user is strictly limited. It allows HTTP/HTTPS downloads (to capture payloads) and local/VPC DNS lookups, while explicitly blocking access to the AWS Instance Metadata Service (`169.254.169.254`), private RFC1918 subnets, and non-HTTP ports.
-- **Upstream Bug Fix**: Identified and patched an unhandled `TypeError` in Cowrie 3.0.0's emulated `curl` command. When servers returned responses without a `Content-Length` header, Cowrie compared an internal string sentinel against an integer, silently dropping file downloads. The fix keeps payload capture working against live servers.
-- **Burst Deduplication with DynamoDB TTL**: CloudWatch Logs Insights scheduled queries run every 5 minutes with a 20-minute lookback window to catch credential-guessing bursts without missing delayed events. Lambda uses DynamoDB with a 25-minute TTL to suppress duplicate alerts for the same attacker IP across overlapping windows.
-- **Static Public Dashboard**: An hourly Lambda function queries the last 24 hours of logs, geolocates source IPs, and generates static JSON feeds to S3. Amazon CloudFront serves the frontend and an interactive WebGL globe with Origin Access Control (OAC), keeping query costs flat regardless of traffic.
+- **Near Real-Time Alerts & Deduplication**: CloudWatch Logs subscription filters push high-confidence events directly to Lambda for sub-second Telegram alerts, while scheduled Insights queries paired with DynamoDB TTL deduplicate high-volume credential bursts.
+- **Defense-in-Depth Honeypot Isolation**: Cowrie runs unprivileged via systemd's `CAP_NET_BIND_SERVICE` with host SSH replaced by AWS SSM Session Manager, while strict `nftables` rules block AWS IMDS (`169.254.169.254`) and internal subnets while safely capturing payload downloads.
+- **Cost-Optimized Static Dashboard**: An hourly Lambda compiles 24-hour telemetry into static JSON feeds on S3, served globally through Amazon CloudFront with Origin Access Control (OAC) and an interactive WebGL globe to keep query costs flat regardless of traffic.
 
 ---
 
 ## Architecture &amp; Data Flow
 
 <p align="center">
-
   <img src="images/arch-new.png" alt="Architecture Overview" width="85%">
-
 </p>
 
 The telemetry pipeline operates across four stages:
@@ -62,9 +57,7 @@ Qualified events are sent to Telegram with source country flags and event contex
 The public dashboard shows attacker coordinates on a 3D globe along with top targeted usernames, passwords, shell commands, and captured downloads.
 
 <p align="center">
-
-    <img src="images/public-dash.png" alt="Public Dashboard" width="90%">
-
+  <img src="images/public-dash.png" alt="Public Dashboard" width="90%">
 </p>
 
 ### Telegram Notifications
@@ -72,9 +65,7 @@ The public dashboard shows attacker coordinates on a 3D globe along with top tar
 Alerts include detection type, attacker IP, country flag, credentials, shell commands, and file metadata.
 
 <p align="center">
-
   <img src="images/telegram.png" alt="Telegram Alert" width="60%">
-
 </p>
 
 ---
@@ -148,4 +139,18 @@ Detailed installation steps, configuration files, and troubleshooting notes are 
     ├── styles.css          # UI styles
     └── globe.gl.min.js     # 3D Globe visualization library
 ```
+
+---
+
+## Acknowledgements & Citations
+
+This project integrates and builds upon several open-source tools, libraries, and datasets:
+
+- **[Globe.gl](https://github.com/vasturiano/globe.gl)** by Vasco Asturiano – WebGL 3D globe visualization library used for the interactive threat map.
+- **[Three.js](https://github.com/mrdoob/three.js)** by Ricardo Cabello (Mr.doob) & contributors – WebGL 3D rendering engine powering the globe visualization.
+- **[World Atlas / TopoJSON](https://github.com/topojson/world-atlas)** by Mike Bostock & [Natural Earth](https://www.naturalearthdata.com/) – 1:110m vector geographic datasets (`site/countries-110m.json`) providing country polygon boundaries.
+- **[Cowrie Honeypot](https://github.com/cowrie/cowrie)** by Michel Oosterhof & contributors – Medium-to-high interaction SSH sensor providing the raw telemetry stream.
+- **[IP-API](https://ip-api.com/)** – IP geolocation batch API used by AWS Lambda to enrich attacker telemetry with coordinates and country data.
+- **Typography** – [Fraunces](https://github.com/undercasetype/Fraunces) by Undercase Type and [IBM Plex Mono](https://github.com/IBM/plex) by IBM (SIL Open Font License).
+
 

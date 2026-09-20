@@ -41,6 +41,7 @@
    - [Infrastructure Automation](#infrastructure-automation)
 9. [Operational Results & Threat Telemetry](#operational-results--threat-telemetry)
 10. [Engineering Retrospective & Lessons Learned](#engineering-retrospective--lessons-learned)
+11. [Acknowledgements & Third-Party Works](#acknowledgements--third-party-works)
 
 ---
 
@@ -469,3 +470,17 @@ All 17 file-transfer and payload events generated immediate Telegram alerts with
 2. **Handling Query Overlap**: CloudWatch Logs ingestion delays require an overlapping lookback window (20 minutes). Implementing DynamoDB TTL deduplication solved repeated alert bursts cleanly without keeping state inside Lambda.
 3. **Egress Containment is Critical**: Unrestricted honeypots risk participating in outbound DDoS attacks or botnet spread. Enforcing kernel-level `nftables` egress filtering guaranteed that attackers could retrieve payloads for analysis while preventing access to AWS metadata (`169.254.169.254`) and private networks.
 4. **Resilience Against Upstream Bugs**: Real attacker traffic often violates RFC specifications (e.g. servers returning no `Content-Length`). Diagnosing and fixing the `TypeError` crash in Cowrie's curl command prevented silent transfer failures and preserved forensic integrity.
+
+---
+
+## Acknowledgements & Third-Party Works
+
+This project incorporates and builds upon several open-source technologies, datasets, and services:
+
+- **[Globe.gl](https://github.com/vasturiano/globe.gl)** by Vasco Asturiano – WebGL 3D globe visualization suite powering the interactive threat map.
+- **[Three.js](https://github.com/mrdoob/three.js)** by Ricardo Cabello (Mr.doob) & contributors – 3D WebGL engine underlying the Globe.gl visualization and coordinate projections.
+- **[World Atlas / TopoJSON](https://github.com/topojson/world-atlas)** by Mike Bostock & [Natural Earth](https://www.naturalearthdata.com/) – 1:110m TopoJSON vector country boundary dataset (`countries-110m.json`) utilized for map polygons.
+- **[Cowrie Honeypot](https://github.com/cowrie/cowrie)** by Michel Oosterhof & contributors – Emulated UNIX shell environment and sensor providing the underlying security telemetry.
+- **[IP-API](https://ip-api.com/)** – Free IP geolocation batch API resolving attacker coordinates, country names, and ASN details.
+- **Typography** – [Fraunces](https://github.com/undercasetype/Fraunces) (Undercase Type) and [IBM Plex Mono](https://github.com/IBM/plex) (IBM), licensed under the SIL Open Font License.
+
