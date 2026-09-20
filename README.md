@@ -32,7 +32,7 @@ The entire production setup operates at **\~$14.06 USD per month** by combining 
 
 ---
 
-## Key Engineering Highlights
+## Key Highlights
 
 - **Sub-3-Second Threat Alerting**: Replaced slow metric alarms with a CloudWatch Logs subscription filter that streams high-confidence events directly to AWS Lambda, delivering formatted Telegram alerts within 3 seconds of an attack.
 - **Honeypot Isolation &amp; Kernel Containment**: The Cowrie sensor runs as an unprivileged user using Linux capabilities (`CAP_NET_BIND_SERVICE`) to bind port 22 directly. Host SSH is completely disabled in favor of AWS Systems Manager (SSM) Session Manager.
@@ -53,10 +53,21 @@ The entire production setup operates at **\~$14.06 USD per month** by combining 
 
 The system operates across four main pipeline stages:
 
-1. **Ingress &amp; Sensor**: Attackers connect to the exposed Cowrie honeypot over TCP port 22. Cowrie emulates an authentic UNIX shell and logs auth attempts, terminal sessions, and file transfers as structured JSON.
-2. **Ingestion &amp; Detection**: The CloudWatch Agent ships logs to `/honeypot/cowrie`. High-severity events (accepted logins, file uploads, payload drops) stream immediately to Lambda via a Subscription Filter.
-3. **Correlation &amp; Deduplication**: Scheduled CloudWatch Logs Insights queries run every 5 minutes over a 20-minute lookback window to catch credential-guessing bursts. The detector Lambda validates records against DynamoDB TTL keys to prevent repeat alert fatigue.
-4. **Alerting &amp; Visualization**: High-severity detections trigger Telegram notifications enriched with GeoIP flags. An hourly Lambda aggregates threat data into static JSON feeds served by Amazon CloudFront.
+**Ingress &amp; Sensor**
+
+Attackers connect to the exposed Cowrie honeypot over TCP port 22. Cowrie emulates an authentic UNIX shell and logs auth attempts, terminal sessions, and file transfers as structured JSON.
+
+**Ingestion &amp; Detection**
+
+The CloudWatch Agent ships logs to `/honeypot/cowrie`. High-severity events (accepted logins, file uploads, payload drops) stream immediately to Lambda via a Subscription Filter.
+
+**Correlation &amp; Deduplication**
+
+Scheduled CloudWatch Logs Insights queries run every 5 minutes over a 20-minute lookback window to catch credential-guessing bursts. The detector Lambda validates records against DynamoDB TTL keys to prevent repeat alert fatigue.
+
+**Alerting &amp; Visualization**
+
+High-severity detections trigger Telegram notifications enriched with GeoIP flags. An hourly Lambda aggregates threat data into static JSON feeds served by Amazon CloudFront.
 
 ---
 
