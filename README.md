@@ -108,14 +108,6 @@ All 17 file-transfer and payload events generated immediate Telegram alerts with
 
 ---
 
-## Technical Writeup
-
-Detailed installation steps, configuration files, and troubleshooting notes are documented in:
-
-### [Read the Full Technical Writeup (WRITEUP.md)](./WRITEUP.md)
-
----
-
 ## Repository Structure
 
 ```
