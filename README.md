@@ -1,424 +1,162 @@
-# Signal/Intercept: AWS CloudWatch-Based SIEM with Honeypot & Notifier
+# Signal / Intercept: AWS Serverless SIEM &amp; Threat Intelligence Honeypot
 
 ![Cover](images/cover.png)
 
-AWS-Hosted Security Information and Event Management (SIEM) using CloudWatch service with Cowrie Honeypot as data source, data and analytics are visualized to a public CloudFront dashboard.
+![Live Dashboard](https://img.shields.io/badge/Live_Dashboard-CloudFront-blue?style=flat&logo=amazon-aws)
+![Technical Writeup](https://img.shields.io/badge/Technical_Writeup-WRITEUP.md-success?style=flat&logo=markdown)
+![AWS](https://img.shields.io/badge/Cloud-AWS_ap--southeast--3-orange?style=flat&logo=amazon-aws)
+![Python](https://img.shields.io/badge/Python-3.14-blue?style=flat&logo=python)
+![Monthly Cost](https://img.shields.io/badge/Operating_Cost-~$14/mo-green?style=flat)
 
-Live dashboard @ [cloudfront.net](https://d35xk6zzbitrov.cloudfront.net/)
+Signal / Intercept is an end-to-end, cloud-native Security Information and Event Management (SIEM) pipeline and threat intelligence sensor built entirely on AWS. 
 
-## Table of Contents
+It captures live internet attacks using a hardened Cowrie honeypot, detects intrusions in real time via Amazon CloudWatch Logs and AWS Lambda, sends sub-3-second alerts to Telegram, and visualizes global attack telemetry through an interactive 3D WebGL dashboard on Amazon CloudFront.
 
-- [Architecture Overview](#architecture-overview)
-- [Event Flow](#event-flow)
-- [Services](#services)
-- [Preparation](#preparation)
-  - [Cowrie](#cowrie)
-  - [Region](#region)
-  - [Pricing Calculation](#pricing-calculation)
-  - [Budgeting](#budgeting)
-  - [Account](#account)
-- [Network](#network)
-  - [VPC](#vpc)
-  - [Security Group](#security-group)
-- [EC2](#ec2)
-  - [IAM role](#iam-role)
-  - [Installing Cowrie](#installing-cowrie)
-  - [Patch Cowrie curl command](#patch-cowrie-curl-command)
-  - [Filtering Cowrie outbound connections](#filtering-cowrie-outbound-connections)
-- [Detecting the attackers](#detecting-the-attackers)
-  - [CloudWatch Log Group](#cloudwatch-log-group)
-  - [CloudWatch Agent](#cloudwatch-agent)
-  - [Subscription Filter](#subscription-filter)
-  - [Scheduled Query with DLQ](#scheduled-query-with-dlq)
-  - [Amazon DynamoDB](#amazon-dynamodb)
-  - [Telegram](#telegram)
-  - [Lambda](#lambda)
-  - [EventBridge](#eventbridge)
-- [Public Dashboard](#public-dashboard)
-  - [How it works](#how-it-works)
-  - [Infrastructure](#infrastructure)
-- [Results](#results)
-- [Conclusion](#conclusion)
-  - [Lessons Learned](#lessons-learned)
+The entire production setup operates at **\~$14.06 USD per month** by combining a lightweight sensor with a 100% serverless detection and reporting architecture.
 
-## Architecture Overview
+> **Looking for the in-depth implementation details?**  
+> For the complete step-by-step deployment guide, firewall rules, CloudWatch Insights query syntax, and upstream bug patch, read the [Technical Writeup (WRITEUP.md)](./WRITEUP.md).
+
+---
+
+## Quick Links
+
+- [Live Attack Dashboard](https://d35xk6zzbitrov.cloudfront.net/)
+- [Full Technical Writeup](./WRITEUP.md)
+- [Architecture &amp; Event Pipeline](#architecture--event-pipeline)
+- [Key Engineering Highlights](#key-engineering-highlights)
+- [Real-World Attack Telemetry](#real-world-attack-telemetry)
+- [Visual Showcase](#visual-showcase)
+- [Technology Stack](#technology-stack)
+- [Repository Structure](#repository-structure)
+
+---
+
+## Key Engineering Highlights
+
+- **Sub-3-Second Threat Alerting**: Replaced slow metric alarms with a CloudWatch Logs subscription filter that streams high-confidence events directly to AWS Lambda, delivering formatted Telegram alerts within 3 seconds of an attack.
+- **Honeypot Isolation &amp; Kernel Containment**: The Cowrie sensor runs as an unprivileged user using Linux capabilities (`CAP_NET_BIND_SERVICE`) to bind port 22 directly. Host SSH is completely disabled in favor of AWS Systems Manager (SSM) Session Manager.
+- **Egress Firewall with nftables**: Strict host-level egress rules allow payload downloads over HTTP and HTTPS while strictly blocking access to the AWS Instance Metadata Service (`169.254.169.254`), private RFC1918 subnets, and IPv6 routes. This prevents SSRF, credential theft, and botnet abuse.
+- **Upstream Open-Source Bug Patch**: Diagnosed and resolved a silent crash in Cowrie 3.0.0's emulated `curl` command where servers omitting `Content-Length` triggered a `TypeError` on string sentinels, restoring automated malware capture.
+- **Cost-Optimized Serverless Analytics**: A decoupled event architecture handles aggregate detections via EventBridge scheduled queries with a 20-minute lookback window, using Amazon DynamoDB TTL deduplication to prevent duplicate alerts.
+- **Interactive 3D Threat Map**: An automated hourly pipeline aggregates logs into flat-cost daily buckets and serves an interactive WebGL globe via S3 and CloudFront with Origin Access Control (OAC).
+
+---
+
+## Architecture &amp; Event Pipeline
 
 <p align="center">
-  <img src="images/arch-new.png" alt="Architecture Overview" width="70%">
+
+  <img src="images/arch-new.png" alt="Architecture Overview" width="85%">
+
 </p>
 
-## Event Flow
+The system operates across four main pipeline stages:
 
-1. Internet user connects to the Cowrie honeypot through TCP port 22.
-2. Cowrie records auth attempts, commands, sessions, timestamps, etc. activity as JSON events.
-3. CloudWatch Agent sends events to CloudWatch Logs.
-4. CloudWatch stores and analyzes the logs using Logs Insights queries and dashboards.
-5. A subscription filter streams successful-login and file-transfer events directly to the detector Lambda.
-6. Amazon EventBridge routes scheduled-query completion events to the detector Lambda function.
-7. Lambda evaluates the results, deduplicates repeated bursts via DynamoDB, and generates an alert when suspicious activity is detected.
-8. Alerts are sent directly to Telegram through the Bot API, with source-country flags resolved via ip-api.com.
-9. Raw logs are archived in a private S3 bucket, while statistics are published through a separate S3 bucket and CloudFront distribution.
+1. **Ingress &amp; Sensor**: Attackers connect to the exposed Cowrie honeypot over TCP port 22. Cowrie emulates an authentic UNIX shell and logs auth attempts, terminal sessions, and file transfers as structured JSON.
+2. **Ingestion &amp; Detection**: The CloudWatch Agent ships logs to `/honeypot/cowrie`. High-severity events (accepted logins, file uploads, payload drops) stream immediately to Lambda via a Subscription Filter.
+3. **Correlation &amp; Deduplication**: Scheduled CloudWatch Logs Insights queries run every 5 minutes over a 20-minute lookback window to catch credential-guessing bursts. The detector Lambda validates records against DynamoDB TTL keys to prevent repeat alert fatigue.
+4. **Alerting &amp; Visualization**: High-severity detections trigger Telegram notifications enriched with GeoIP flags. An hourly Lambda aggregates threat data into static JSON feeds served by Amazon CloudFront.
 
-## Services
+---
 
-Project uses the following AWS services :
+## Visual Showcase
 
-| Services | Use |
-| - | - |
-| **Amazon EC2** | Hosts the Cowrie honeypot and CloudWatch Agent |
-| **Amazon CloudWatch** | Centralizes logs and provides queries, metrics, alarms, and dashboards |
-| **Amazon EventBridge** | Routes scheduled-query completion events to the detector Lambda |
-| **Amazon Lambda** | Evaluates detection results and generates alerts |
-| **Amazon DynamoDB** | Stores burst-dedup keys with TTL so repeated attackers are not re-alerted |
-| **AWS Secrets Manager** | Holds the Telegram bot token and chat ID |
-| **Amazon SQS** | Dead-letter queue for failed EventBridge deliveries to Lambda |
-| **Amazon S3** | Archives raw logs and stores dashboard data |
-| **Amazon CloudFront** | Publishes the portfolio dashboard |
+### Interactive Threat Dashboard
 
-## Preparation
+The public-facing dashboard displays live geographic coordinates, top targeted usernames, captured passwords, shell commands, and malware transfer logs.
 
-### Cowrie
+<p align="center">
 
-  <img src="images/cowrie-logo.png" alt="Cowrie Logo" width="20%">
+  <a href="https://d35xk6zzbitrov.cloudfront.net/">
 
-Cowrie is a medium- and high-interaction SSH and Telnet honeypot designed to capture brute-force attempts and record attacker activity. In this project, Cowrie operates in medium-interaction shell mode where it emulates UNIX environment in Python and serves as the primary source of data.
+    <img src="images/public-dash.png" alt="Public Dashboard" width="90%">
 
-### Region
+  </a>
 
-Regional resources in this project are deployed in the Asia Pacific (Jakarta) Region _(ap-southeast-3)_. CloudFront is a global service, while other resources (EC2, CloudWatch, Lambda, DynamoDB, EventBridge, Secrets Manager, and S3) are configured in selected AWS Region.
+</p>
 
-### Pricing Calculation
+### Real-Time Telegram Threat Alerts
 
-![Price Calculation](images/pricing-calc.png)
+Alerts arrive in under 3 seconds and contain full contextual telemetry: detection type, source IP, country flag, credentials, shell commands, and file hashes.
 
-Estimated Monthly cost is **14.06 USD** as of `16 July 2026`. The cost covers one **EC2 Instances + 8GB gp3 EBS**, and one **Public IPv4 address**.
+<p align="center">
 
-**CloudWatch, Lambda, S3 & CloudFront** will use Free Tier Plan and expected to remain within free tier usage, therefore the services will be free of charge. **DynamoDB** (on-demand, a few items per day) and **Secrets Manager** (one secret) add well under `0.50 USD` per month at honeypot volume.
+  <img src="images/telegram.png" alt="Telegram Alert" width="65%">
 
-### Budgeting
+</p>
 
-![Budget Dashboard](images/budgets.png)
+---
 
-Project service costs per month are tracked via AWS Budgets `Monthly Cost Limit`. Additionally, `Zero-Spend` alert is also configured to flag any unexpected resource usage before it accumulates cost.
+## Real-World Attack Telemetry
 
-### Account
+Data gathered over an initial 15-day live deployment window (July 29 to August 12, 2026):
 
-Before starting, a separate IAM user named `bint-siem` is created instead of using the root user account for the project. The user is then attached to a user group with only the permissions necessary for this project, following the _Principle of Least Privilege_ (PoLP)
 
-![User Group Permissions](images/permissions.png)
+| Metric                                | Captured Count         |
+| :------------------------------------- | :---------------------- |
+| **Total Inbound Connections**         | 2,123                  |
+| **Brute-Force SSH Auth Attempts**     | 1,193                  |
+| **Unique Attacker Source IPs**        | 293                    |
+| **Simulated Shell Commands Recorded** | 276                    |
+| **Malicious Payload Downloads**       | 8                      |
+| **Malicious File Uploads**            | 9                      |
+| **Alert Delivery Latency**            | &lt; 3 seconds         |
+| **False Positive Rate**               | 0% (Honeypot baseline) |
 
-## Network
 
-### VPC
+---
 
-![Resource Map](images/resource-map.png)
+## Technology Stack
 
-EC2 instance is deployed in a _Virtual Private Cloud_ (VPC) named `cowrie-siem-vpc` using `10.10.0.0/16` CIDR block, with a public subnet at `10.10.1.0/24`. This setup provides 251 IP addresses (AWS reserves 5 addresses) which is more than enough for the EC2 instance.
 
-### Security Group
+| Layer                                  | Technologies &amp; Services                                                    |
+| :-------------------------------------- | :------------------------------------------------------------------------------ |
+| **Cloud Provider**                     | Amazon Web Services (AWS) - Jakarta Region (`ap-southeast-3`)                  |
+| **Sensor &amp; Compute**               | Amazon EC2 (`t3.nano` / `t3.micro`), Cowrie Honeypot, Python 3.14              |
+| **Operating System &amp; Security**    | Ubuntu Linux, `nftables`, Linux Capabilities (`CAP_NET_BIND_SERVICE`), AWS SSM |
+| **Log Management &amp; Querying**      | Amazon CloudWatch Logs, CloudWatch Agent, Logs Insights                        |
+| **Serverless Detection &amp; Routing** | AWS Lambda, Amazon EventBridge, Amazon SQS (Dead-Letter Queue)                 |
+| **State &amp; Secret Management**      | Amazon DynamoDB (On-Demand with TTL), AWS Secrets Manager                      |
+| **Notification Channel**               | Telegram Bot API, `ip-api.com` (GeoIP resolution)                              |
+| **Storage &amp; Edge Delivery**        | Amazon S3 (Raw archive &amp; web hosting), Amazon CloudFront (OAC)             |
+| **Frontend Visualization**             | Globe.gl (Three.js / WebGL), HTML5, Vanilla JavaScript, CSS3                   |
+| **Automation**                         | PowerShell (`code/infra.ps1`), AWS CLI                                         |
 
-Security group is configured for `cowrie-siem-vpc` with inbound and outbound rules as below:
 
-a. Inbound Rules
+---
 
-| Type | Protocol | Port | Source | Purpose
-| - | - | - | - | - |
-| SSH | TCP | 22 | `0.0.0.0/0` | Cowrie fake SSH service
+## Writeup
 
-b. Outbound Rules
+All step-by-step configurations, firewall rules, code samples, and lessons learned have been organized into the dedicated technical writeup:
 
-| Type | Protocol | Port | Destination | Purpose
-| - | - | - | - | - |
-| HTTPS | TCP | 443 | `0.0.0.0/0` | SSM, CloudWatch, AWS APIs, HTTPS package repositories
-| HTTP | TCP | 80 | `0.0.0.0/0` | If a package repository still requires HTTP
+### [Read the Full Technical Writeup (WRITEUP.md)](./WRITEUP.md)
 
-## EC2
+---
 
-### IAM role
-
-![Resource Map](images/ec2-role.png)
-
-EC2 instance is attached with a role with policies below:
-
-a. `AmazonSSMManagedInstanceCore`: Enable AWS Systems Manager service core functionality
-
-b. `CowrieCloudWatchLogsWrite` _(Inline Policy)_: Send logs to the `/honeypot/cowrie` log group and publish metrics to the `Cowrie/Host` namespace
-
-### Installing Cowrie
-
-Before installing Cowrie, a dedicated unprivileged user and python venv are created. Running Cowrie without admin power limits impact if honeypot is compromised, venv keeps python dependencies isolated from the system environment.
-
-After setup, `cowrie 3.0.0` is installed. Configuration is set as below after `cowrie init` is completed:
+## Repository Structure
 
 ```
-[honeypot]
-hostname = srv-test-01
-backend = shell
-download_limit_size = 10485760
-
-[ssh]
-enabled = true
-listen_endpoints = tcp:22:interface=0.0.0.0
-
-[telnet]
-enabled = false
+.
+├── README.md               # Portfolio cover page and project summary
+├── WRITEUP.md              # Complete technical writeup and implementation guide
+├── images/                 # Architecture diagrams, dashboards, and alert screenshots
+│   ├── arch-new.png        # System architecture diagram
+│   ├── cover.png           # Repository cover banner
+│   ├── public-dash.png     # WebGL 3D threat map screenshot
+│   ├── telegram.png        # Telegram notification example
+│   └── ...                 # Additional configuration and terminal screenshots
+├── code/                   # Production backend scripts and automation
+│   ├── lambda.py           # Detector Lambda (Subscription filter, EventBridge, Telegram)
+│   ├── exporter.py         # Hourly threat intelligence aggregator and S3 publisher
+│   ├── raw_archiver.py     # Real-time raw log stream archiver
+│   └── infra.ps1           # Infrastructure-as-code deployment script
+└── site/                   # Static dashboard frontend
+    ├── index.html          # Dashboard markup
+    ├── app.js              # Application logic and CloudFront data consumer
+    ├── styles.css          # UI styles
+    └── globe.gl.min.js     # 3D Globe visualization library
 ```
 
-Since ports 1-1023 normally requires root privileges, `CAP_NET_BIND_SERVICE` is used:
+---
 
-```
-# Restrict the service's available capabilities
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# Grant the capability required to bind to TCP port 22
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-```
-
-Once configuration is set, give TCP 22 port to cowrie by disabling `ssh.service` and `ssh.socket`, and enabling / starting Cowrie.
-
-![Cowrie](images/cowrie.png)
-
-Note that SSH is no longer available, EC2 is accessed via AWS Systems Manager (SSM)
-
-### Patch Cowrie curl command
-
-`Cowrie 3.0.0` contains a bug in its emulated curl command.
-
-```
-src/cowrie/commands/curl.py  
-```
-
-When downloading from web servers that do not return a `Content-Length` header, Twisted sets `response.length` to the string sentinel `UNKNOWN_LENGTH`. Cowrie attempts to evaluate `self.totallength > limit_size`, raising `TypeError: '>' not supported between instances of 'str' and 'int'` and crashing the transfer silently.
-
-The fix is to make `self.totallength` comparisons int-safe. The byte-level size limit in `collect()` remains fully enforced during transfer:
-
-```python
-
-# Before
-if limit_size > 0 and self.totallength > limit_size:
-
-# After
-if limit_size > 0 and isinstance(self.totallength, int) and self.totallength > limit_size:  
-
-```
-
-### Filtering Cowrie outbound connections
-
-After installing and configuring Cowrie on the EC2 instance, outbound traffic from `cowrie` user allows public HTTP (80) and HTTPS (443) payload retrieval, restrict DNS to local/VPC resolvers, and reject unsafe destinations (private IPs, EC2 metadata, IPv6).
-
-```nftables
-
-meta skuid ${COWRIE_UID} ip daddr { 127.0.0.53, 127.0.0.1, 10.10.0.2 } udp dport 53 accept
-meta skuid ${COWRIE_UID} ip daddr { 127.0.0.53, 127.0.0.1, 10.10.0.2 } tcp dport 53 accept
-
-meta skuid ${COWRIE_UID} ip daddr @unsafe_ipv4 ct state new \
-  log prefix "cowrie-egress-unsafe " counter reject
-meta skuid ${COWRIE_UID} ip6 daddr ::/0 ct state new \
-  log prefix "cowrie-egress-ipv6 " counter reject
-
-meta skuid ${COWRIE_UID} tcp dport { 80, 443 } accept
-
-meta skuid ${COWRIE_UID} ct state new \
-  log prefix "cowrie-egress-deny " counter reject
-
-```
-
-This rule is implemented using a custom script and persisted using systemd
-
-After implementation, Cowrie can resolve names and fetch files over HTTP/HTTPS to capture downloads via `wget`/`curl`, but it cannot reach AWS metadata (`169.254.169.254`), private internal networks, IPv6, or non-HTTP ports.
-
-![HTTP & HTTPS working](images/cowrie_connection.png)
-
->The VPC is IPv4-only today, so the IPv6 rule matches no traffic. However, because the firewall uses the `inet` family, any future IPv6 traffic would bypass the IPv4-only deny list, leaving egress unrestricted.
-
-## Detecting the attackers
-
-### CloudWatch Log Group
-
-Created `/honeypot/cowrie` log group to receive logs from Cowrie EC2 instance.
-
-### CloudWatch Agent
-
-`AmazonCloudWatchAgent` package is installed to the EC2 instance via SSM &rarr; Run command, using `AWS-ConfigureAWSPackage` document.
-
-CloudWatch agent is configured as below:
-
-Source &rarr; `/home/cowrie/my-honeypot/var/log/cowrie/cowrie.json`
-Target &rarr; `/honeypot/cowrie`
-
-After configuration, CloudWatch agent successfully sends logs to CloudWatch Logs.
-
-![CloudWatch Logs](images/cloudwatch-logs.png)
-
-### Subscription Filter
-
-CloudWatch Logs subscription filter streams successful login, and file transfer events directly to the detector Lambda.
-
-Subscription filter named `cowrie-high-confidence-events` is configured on the `/honeypot/cowrie` log group with the pattern:
-
-```pattern
-
-{ ($.eventid = "cowrie.login.success") || ($.eventid = "cowrie.session.file_upload") || ($.eventid = "cowrie.session.file_download") }
-
-```
-
-| Setting | Value |
-|---|---|
-| Filter name | `cowrie-high-confidence-events` |
-| Destination | Lambda function `cowrie-detector` |
-| Log format | JSON |
-
-CloudWatch Logs sends compressed events to Lambda. Lambda decodes and verifies the payload, maps the event to a detection type, and sends a Telegram alert with key details (detection name, severity, country flag, source IP, timestamp, sensor alias, alert ID, event-specific fields such as credentials, filename or URL, and optional SHA-256).
-
-| Cowrie event | Detection | Severity |
-|---|---|---|
-| `cowrie.login.success` | `COWRIE_EMULATED_AUTH_ACCEPTED` | HIGH |
-| `cowrie.session.file_upload` | `COWRIE_FILE_UPLOADED` | HIGH |
-| `cowrie.session.file_download` | `COWRIE_URL_PAYLOAD_DOWNLOADED` | HIGH |
-
-### Scheduled Query with DLQ
-
-CloudWatch's scheduled query is created to detect login attempts, using filter as below:
-
-  ```
-
-  fields "CREDENTIAL_GUESSING_BURST" as detection,
-        src_ip,
-        username,
-        session
-  | filter eventid = "cowrie.login.failed"
-      or eventid = "cowrie.login.success"
-  | stats count(*) as attempts,
-          count_distinct(username) as usernames,
-          count_distinct(session) as sessions
-    by detection, src_ip
-  | filter attempts >= 5
-  | sort attempts desc
-  
-  ```
-
-The query is run every 5 minutes indefinitely, with lookback of 20 minutes.
-
-Because logs take a few minutes to process and become searchable, this 20-minute window ensures late-arriving events are not missed. This overlap means the system may read the same event up to four times, but duplicate events are filtered out by a DynamoDB deduplication table (_see Amazon DynamoDB below_).
-
-`cowrie-detector-dlq` is attached for when EventBridge can't successfully invoke the Lambda, CloudWatch alarm is assigned to detect if there's any event in the queue.
-
-### Amazon DynamoDB
-
-Table `cowrie-alert-dedup` (on-demand) deduplicates credential-guessing alerts caused by the query's overlapping lookback windows.
-
-| Setting | Value |
-|---|---|
-| Table name | `cowrie-alert-dedup` |
-| Partition key | `alert_key`  |
-| Billing | On-demand |
-| TTL | Enabled on `expires_at` |
-
-After sending an alert, the detector writes each alerted `src_ip` with `expires_at` set 25 minutes ahead (longer than query's 20-minute lookback), so each attacker is alerted once and only new IPs appear in later alerts. DynamoDB TTL deletes expired keys lazily, so the detector also compares `expires_at` against the current time before treating an item as fresh.
-
-### Telegram
-
-Alerts are delivered to Telegram directly from the detector Lambda through the Bot API.
-
-Bot is created through `@BotFather` which issues the bot token, and private chat ID is read from `getUpdates`. Both values are stored in Secrets Manager secret `cowrie/telegram` as JSON:
-
-```json
-{ "bot_token": "...", "chat_id": "..." }
-```
-
-The detector reads the secret at cold start (env var `TELEGRAM_SECRET` holds the secret ID) and sends alerts with `sendMessage`.
-
-![Telegram Alert](images/telegram.png)
-
-### Lambda
-
-`cowrie-detector` function is created using configuration as below:
-
-`python 3.14` runtime.
-`timeout = 30 seconds`
-`env_variable = TELEGRAM_SECRET` secret ID holding bot token and chat ID
-`env_variable = DEDUP_TABLE` DynamoDB table for burst deduplication
-`env_variable = COWRIE_LOG_GROUP` to validate the source log group
-`env_variable = EXPECTED_ACCOUNT_ID` to reject events from other accounts
-`env_variable = EXPECTED_REGION` to reject events from other Regions
-`env_variable = CREDENTIAL_QUERY_ARN` to accept only the credential-guessing scheduled query
-
-Lambda code is available at [`code/lambda.py`](code/lambda.py)
-
-### EventBridge
-
-Rule `cowrie-scheduled-queries-to-detector` is created to send the credential-guessing query's completion events to the `cowrie-detector` Lambda.
-
-Successful-login and file-transfer events skip EventBridge, instead the subscription filter delivers those directly to Lambda, so EventBridge carries only the aggregate detection.
-
-The rule matches only this query:
-
-```json
-{
-  "source": ["aws.logs"],
-  "detail-type": ["Scheduled Query Completed"],
-  "resources": ["arn:aws:logs:ap-southeast-3:ACCOUNT_ID:scheduled-query:SCHEDULED_QUERY_ID"],
-  "detail": { "status": ["Complete"] }
-}
-```
-
-Each event carries a `queryId`, which Lambda uses to fetch result rows. The target also has the `cowrie-detector-dlq` queue attached, so failed invocations are preserved instead of dropped.
-
-## Public Dashboard
-
-A public, read-only attack dashboard is published through a private S3 bucket fronted by CloudFront (Origin Access Control). It shows attacker source IPs, usernames, passwords, commands, file uploads, and download urls.
-
-![Public Dashboard](images/public-dash.png)
-
-### How it works
-
-Hourly EventBridge schedule invokes the `cowrie-dashboard-exporter` Lambda ([`code/exporter.py`](code/exporter.py)), which runs CloudWatch Logs Insights queries over the last 24 hours against `/honeypot/cowrie`, geolocates source IPs with `ip-api.com`, aggregates the results, and writes three JSON documents to the bucket:
-
-| Object | Contents | Purpose |
-|---|---|---|
-| `meta.json` | `first_data_date`, `generated_at` | Bounds the range picker |
-| `live.json` | Rich last-24 h view (globe points, top lists, recent attacks) | Last 24h view |
-| `archive.json` | Compact per-day aggregates, all-time | All / 7d / 30d / custom views |
-
-Because the archive is maintained incrementally one day-bucket per run, query cost stays flat regardless of how much history accumulates.
-
-### Infrastructure
-
-Provisioning is scripted in [`code/infra.ps1`](code/infra.ps1), a powershell script that automatically creates or updates every resource for the dashboard in one run:
-
-| Resource | Purpose |
-|---|---|
-| S3 bucket (dashboard site) | Hosts static dashboard files and JSON exports, Block Public Access enabled |
-| S3 bucket (raw archive) | Versioned private bucket storing every raw Cowrie event |
-| IAM roles | Least-privilege roles for both Lambdas |
-| cowrie-dashboard-exporter Lambda | Packages and deploys [`code/exporter.py`](code/exporter.py) |
-| cowrie-raw-archiver Lambda | Packages and deploys [`code/raw_archiver.py`](code/raw_archiver.py) |
-| SQS DLQ | Catches failed exporter invocations |
-| EventBridge rule | Invokes the exporter hourly |
-| Subscription filter | Streams raw Cowrie events to the archiver Lambda |
-| CloudFront + OAC | Serves the site publicly via HTTPS |
-
-
-## Results
-
-Numbers below are taken from the dashboard data, covering the first 15 days (_2026-07-29 &rarr; 2026-08-12_):
-
-| Metric | Value |
-|---|---|
-| Honeypot connections | 2,123 |
-| Authentication attempts | 1,193 |
-| Unique source IPs | 293 |
-| Commands entered in the fake shell | 276 |
-| Payload downloads | 8 |
-| File uploads | 9 |
-
-
-## Conclusion
-
-Project delivers a working SIEM pipeline. Cowrie feeds CloudWatch Logs, a subscription filter alerts on high-confidence events within seconds, a scheduled query catches credential-guessing bursts, and both feed one Lambda that notifies Telegram. In 15 days the honeypot saw 2,123 connections from 293 unique IPs and delivered all 17 file-transfer alerts, at an estimated `14.06 USD` per month.
-
-### Lessons Learned
-
-- Metric alarms were replaced by a subscription filter, since threshold alarms fire late and carry no event detail, while the filter delivers raw events to Lambda in seconds.
-- Overlapping lookback windows re-read events, so DynamoDB TTL dedup is set up to handle this, DLQs keep failed invocations from being dropped.
-- `Cowrie 3.0.0` emulated curl crashed on real attacker traffic when a download server omitted `Content-Length`, manual debugging and fix were required
